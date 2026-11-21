@@ -8,6 +8,10 @@ frappe.pages['document-management-console'].on_page_load = function(wrapper) {
     wrapper.document_management_console = new DocumentManagementConsole(wrapper, page);
 };
 
+frappe.pages['document-management-console'].on_page_show = function(wrapper) {
+    wrapper.document_management_console?.on_show?.();
+};
+
 function markdown_anchor_slug(value) {
     return String(value || '')
         .trim()
@@ -42,7 +46,15 @@ class DocumentManagementConsole {
     constructor(wrapper, page) {
         this.wrapper = $(wrapper).find('.layout-main-section');
         this.page = page;
-        
+        this.provider = frappe.document_management?.console_adapter;
+        if (this.provider) {
+            // Frappe appends page_js before calling on_page_load.
+            Promise.resolve().then(() => this.provider.prepare?.()).then(() => this.init_vue()).catch(() => {
+                this.wrapper.text(__('The document console could not be loaded.'));
+            });
+            return;
+        }
+
         if (typeof Vue === 'undefined') {
             frappe.require("https://unpkg.com/vue@3/dist/vue.global.prod.js", () => {
                 this.load_pdf_viewer();
@@ -73,6 +85,8 @@ class DocumentManagementConsole {
     }
 
     init_vue() {
+        const provider = this.provider;
+        const console_page = this;
         const template = `
             <div class="paperless-app" :class="{'sidebar-open': selected_doc}">
                 <!-- Toolbar -->
@@ -101,7 +115,8 @@ class DocumentManagementConsole {
                             </div>
                         </div>
                     </div>
-                    <div class="filter-box statuses-dropdown-container">
+                    <component v-if="extensions.status_filter" :is="extensions.status_filter"></component>
+                    <div v-if="!provider" class="filter-box statuses-dropdown-container">
                         <button class="statuses-dropdown-btn" @click.stop="toggle_status_dropdown">
                             <i class="fa fa-info-circle"></i>
                             <span v-if="filters.statuses.length === 0">${__('All Statuses')}</span>
@@ -150,7 +165,8 @@ class DocumentManagementConsole {
                             </div>
                         </div>
                     </div>
-                    <div class="filter-box saved-view-box">
+                    <component v-if="extensions.saved_views" :is="extensions.saved_views"></component>
+                    <div v-if="!provider" class="filter-box saved-view-box">
                         <select v-model="selected_saved_view" @change="apply_saved_view">
                             <option value="">${__('Saved views')}</option>
                             <option v-for="view in saved_views" :value="view.name">{{ view.view_name }}</option>
@@ -165,7 +181,7 @@ class DocumentManagementConsole {
                     <button class="btn-refresh" @click="fetch_documents">
                         <i class="fa fa-refresh"></i>
                     </button>
-                    <button class="btn-refresh" :class="{active: trash_mode}" @click="toggle_trash">
+                    <button v-if="!provider" class="btn-refresh" :class="{active: trash_mode}" @click="toggle_trash">
                         <i class="fa fa-trash"></i> {{ trash_mode ? '${__('Documents')}' : '${__('Trash')}' }}
                     </button>
                     <span class="doc-count" :style="{ visibility: loading ? 'hidden' : 'visible' }">{{ documents.length }} ${__('documents')}</span>
@@ -174,15 +190,16 @@ class DocumentManagementConsole {
                         <button class="btn" :class="{active: view_mode==='large'}" @click="view_mode='large'" :title="'${__('List Cards')}'"><i class="fa fa-th-list"></i></button>
                         <button class="btn" :class="{active: view_mode==='list'}" @click="view_mode='list'" :title="'${__('Table View')}'"><i class="fa fa-list"></i></button>
                     </div>
-                    <button v-if="!trash_mode" class="btn-upload" @click="show_upload_modal = true" style="margin-left: 10px;">
+                    <component v-if="extensions.toolbar_actions" :is="extensions.toolbar_actions"></component>
+                    <button v-if="!provider && !trash_mode" class="btn-upload" @click="show_upload_modal = true" style="margin-left: 10px;">
                         <i class="fa fa-cloud-upload"></i> ${__('Upload')}
                     </button>
-                    <button v-if="!trash_mode && can_purge" class="btn btn-default" @click="import_archive">
+                    <button v-if="!provider && !trash_mode && can_purge" class="btn btn-default" @click="import_archive">
                         <i class="fa fa-upload"></i> ${__('Import Archive')}
                     </button>
                 </div>
 
-                <div class="bulk-toolbar" v-if="selected_count">
+                <div class="bulk-toolbar" v-if="!provider && selected_count">
                     <strong>{{ selected_count }} ${__('selected')}</strong>
                     <button v-if="!trash_mode" class="btn btn-sm btn-default" @click="show_bulk_edit">
                         <i class="fa fa-pencil"></i> ${__('Edit')}
@@ -206,6 +223,8 @@ class DocumentManagementConsole {
                     <!-- Left: Document List/Grid -->
                     <div class="paperless-content">
 
+                        <component v-if="extensions.list_status" :is="extensions.list_status"></component>
+
                         <!-- Skeleton Loading -->
                         <div v-if="loading" class="skeleton-grid">
                             <div v-for="n in 8" class="skeleton-card">
@@ -217,7 +236,7 @@ class DocumentManagementConsole {
                         </div>
 
                         <!-- Empty State -->
-                        <div v-else-if="documents.length === 0" class="empty-state">
+                        <div v-else-if="documents.length === 0" v-show="!hide_empty_state" class="empty-state">
                             <div class="empty-icon"><i class="fa fa-folder-open-o"></i></div>
                             <h5>${__('No documents found')}</h5>
                             <p>${__('Try adjusting your search or filters to find what you are looking for.')}</p>
@@ -234,6 +253,7 @@ class DocumentManagementConsole {
                                     <i class="fa" :class="get_icon(doc)"></i>
                                 </div>
                                 <div class="doc-title">{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></div>
+                                <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                 <div style="font-size: 10px; color: var(--pc-primary); margin-top: 2px;" v-if="doc.ocr_status === 'Pending' || doc.ocr_status === 'Processing'">
                                     <i class="fa fa-spinner fa-spin"></i> ${__('Processing OCR')}
                                 </div>
@@ -257,12 +277,13 @@ class DocumentManagementConsole {
                                  :class="{active: selected_doc && selected_doc.name === doc.name, selected: is_selected(doc.name)}"
                                  :data-type="get_file_type(doc)"
                                  @click="select_doc(doc)">
-                                <input class="document-selector inline" type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" />
+                                <input v-if="!provider" class="document-selector inline" type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" />
                                 <div class="doc-icon-wrapper" :class="get_icon_class(doc)">
                                     <i class="fa" :class="get_icon(doc)"></i>
                                 </div>
                                 <div class="large-card-body">
                                     <div class="doc-title">{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></div>
+                                    <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                     <div class="doc-meta-row">
                                         <span v-if="doc.document_code" class="doc-meta-item"><i class="fa fa-hashtag"></i> {{ doc.document_code }}</span>
                                         <span v-if="doc.ocr_status === 'Pending' || doc.ocr_status === 'Processing'" class="doc-meta-item" style="color: var(--pc-primary);"><i class="fa fa-spinner fa-spin"></i> ${__('OCR')}</span>
@@ -275,7 +296,7 @@ class DocumentManagementConsole {
                                     </div>
                                 </div>
                                 <div class="large-card-actions">
-                                    <button class="btn-action" @click.stop="open_doc(doc.name)" :title="'${__('Open in Frappe')}'"><i class="fa fa-external-link"></i></button>
+                                    <button v-if="!provider" class="btn-action" @click.stop="open_doc(doc.name)" :title="'${__('Open in Frappe')}'"><i class="fa fa-external-link"></i></button>
                                     <a v-if="doc.original_file || doc.document_file" class="btn-action" :href="doc.original_download || doc.document_download || doc.original_file || doc.document_file" target="_blank" @click.stop :title="'${__('Download')}'"><i class="fa fa-download"></i></a>
                                 </div>
                             </div>
@@ -286,7 +307,7 @@ class DocumentManagementConsole {
                             <table class="table table-hover">
                                 <thead>
                                     <tr>
-                                        <th style="width: 36px"><input type="checkbox" :checked="all_selected" @change="toggle_all" /></th>
+                                        <th v-if="!provider" style="width: 36px"><input type="checkbox" :checked="all_selected" @change="toggle_all" /></th>
                                         <th style="width: 44px"></th>
                                         <th>${__('Title')}</th>
                                         <th>${__('Category')}</th>
@@ -298,13 +319,14 @@ class DocumentManagementConsole {
                                     <tr v-for="doc in documents" :key="doc.name" 
                                         :class="{active: selected_doc && selected_doc.name === doc.name, selected: is_selected(doc.name)}"
                                         @click="select_doc(doc)">
-                                        <td><input type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" /></td>
+                                        <td v-if="!provider"><input type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" /></td>
                                         <td><span class="list-icon" :class="get_icon_class(doc)"><i class="fa" :class="get_icon(doc)"></i></span></td>
                                         <td>
                                             <strong>{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></strong>
                                             <span v-if="doc.ocr_status === 'Pending' || doc.ocr_status === 'Processing'" style="display: block; font-size: 11px; margin-top: 2px; color: var(--pc-primary);"><i class="fa fa-spinner fa-spin"></i> ${__('Processing OCR')}</span>
                                             <span v-if="doc.document_code" class="text-muted" style="display: block; font-size: 11px; margin-top: 2px;"><i class="fa fa-hashtag"></i> {{ doc.document_code }}</span>
                                             <span v-if="doc.party_name" class="text-muted" style="display: block; font-size: 11px; margin-top: 2px;"><i class="fa fa-handshake-o"></i> {{ doc.party_name }}</span>
+                                            <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                             <span v-if="filters.search && doc.search_excerpt" class="search-excerpt">
                                                 <span v-if="doc.search_page">${__('Page')} {{ doc.search_page }}: </span><span v-html="highlight_text(doc.search_excerpt, doc.search_terms)"></span>
                                             </span>
@@ -320,15 +342,17 @@ class DocumentManagementConsole {
                                 </tbody>
                             </table>
                         </div>
+                        <component v-if="extensions.list_footer" :is="extensions.list_footer"></component>
                     </div>
 
                     <!-- Right: Sidebar -->
-                    <div class="paperless-sidebar" v-if="selected_doc" :key="selected_doc.name">
+                    <div class="paperless-sidebar" v-if="selected_doc" :class="sidebar_class" :key="selected_doc.name">
                         <div class="sidebar-header">
                             <h4>{{ selected_doc.document_name }}</h4>
                             <button class="btn-close-sidebar" @click="selected_doc = null"><i class="fa fa-times"></i></button>
                         </div>
                         <div class="sidebar-body">
+                            <component v-if="extensions.sidebar_top" :is="extensions.sidebar_top"></component>
                             <!-- Preview (inline) -->
                             <div class="doc-preview" v-if="selected_doc.document_file && !is_fullscreen">
                                 <button class="fullscreen-btn" @click="is_fullscreen = true" :title="'${__('Toggle Full Screen')}'">
@@ -456,6 +480,7 @@ class DocumentManagementConsole {
                                         <div class="meta-value">{{ selected_doc.category }}</div>
                                     </div>
                                 </div>
+                                <component v-if="extensions.sidebar_metadata" :is="extensions.sidebar_metadata"></component>
                                 <div class="meta-item" v-if="selected_doc.folder">
                                     <div class="meta-icon"><i class="fa fa-folder"></i></div>
                                     <div class="meta-content">
@@ -505,8 +530,11 @@ class DocumentManagementConsole {
                                     </div>
                                 </div>
                             </div>
+                            <component v-if="extensions.sidebar_bottom" :is="extensions.sidebar_bottom"></component>
                         </div>
                         <div class="sidebar-footer">
+                            <component v-if="extensions.sidebar_actions" :is="extensions.sidebar_actions"></component>
+                            <template v-if="!provider">
                             <button v-if="!trash_mode" class="btn btn-copy-link" @click="copy_link(selected_doc)">
                                 <i class="fa fa-clipboard"></i> ${__('Copy Link')}
                             </button>
@@ -534,8 +562,8 @@ class DocumentManagementConsole {
                             <a v-if="selected_doc.original_file || selected_doc.document_file" :href="selected_doc.original_download || selected_doc.original_file || selected_doc.document_download || selected_doc.document_file" target="_blank" class="btn btn-download">
                                 <i class="fa fa-download"></i> ${__('Download Original File')}
                             </a>
+                            </template>
                         </div>
-                    </div>
                     </div>
                 </div>
 
@@ -759,6 +787,7 @@ class DocumentManagementConsole {
                 const realtime_event = 'document_management_document_changed';
 
                 const fetch_documents = () => {
+                    if (provider) return adapter.load_documents();
                     loading.value = true;
                     frappe.call({
                         method: 'document_management.frappe_document_management.page.document_management_console.document_management_console.get_documents',
@@ -977,6 +1006,7 @@ class DocumentManagementConsole {
                 }
 
                 function select_doc(doc) {
+                    if (provider) return adapter.select_document(doc);
                     selected_doc.value = doc;
                     const file_path = doc ? (doc.original_file || doc.document_file) : null;
                     const preview_url = doc ? (doc.original_download || doc.document_download || file_path) : null;
@@ -1482,7 +1512,22 @@ class DocumentManagementConsole {
                     }, 250);
                 };
 
+                // A page_js provider owns data loading and receives reactive console state.
+                // Its optional Vue components fill the extension points in the template.
+                const adapter = provider?.setup({
+                    Vue, documents, categories, tags, selected_doc, loading, filters, view_mode, is_fullscreen
+                });
+                const extensions = adapter?.components || {};
+                const hide_empty_state = adapter?.hide_empty_state || false;
+                const sidebar_class = adapter?.sidebar_class || '';
+
                 onMounted(() => {
+                    window.addEventListener('click', handle_window_click);
+                    if (adapter) {
+                        console_page.on_show = adapter.on_show;
+                        adapter.on_show();
+                        return;
+                    }
                     fetch_access_capabilities();
                     fetch_categories();
                     fetch_folders();
@@ -1492,18 +1537,19 @@ class DocumentManagementConsole {
                     if (frappe.realtime && frappe.realtime.on) {
                         frappe.realtime.on(realtime_event, handle_realtime_document_change);
                     }
-                    window.addEventListener('click', handle_window_click);
                 });
 
                 onBeforeUnmount(() => {
+                    clearTimeout(debounceTimer);
                     clearTimeout(realtimeRefreshTimer);
-                    if (frappe.realtime && frappe.realtime.off) {
+                    if (!adapter && frappe.realtime && frappe.realtime.off) {
                         frappe.realtime.off(realtime_event);
                     }
                     window.removeEventListener('click', handle_window_click);
                 });
 
                 return {
+                    provider, extensions, hide_empty_state, sidebar_class,
                     documents, categories, folders, tags, selected_doc, view_mode, loading, filters, is_fullscreen,
                     department_available,
                     trash_mode, selected_count, all_selected, can_purge,

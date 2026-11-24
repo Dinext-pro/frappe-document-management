@@ -4,6 +4,7 @@ import secrets
 from urllib.parse import quote
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import get_standalone_document
 from frappe.utils import add_days, cint, get_datetime, now_datetime
 from frappe.utils.file_manager import get_file_path
 
@@ -59,7 +60,7 @@ def _get_share_link(token):
 
 def get_shared_document_context(token):
     link = _get_share_link(token)
-    document = frappe.get_doc("Document", link.document)
+    document = get_standalone_document(link.document)
     if document.is_deleted:
         frappe.throw("Shared document is no longer available.", frappe.PermissionError)
     version = document.get_current_version()
@@ -91,7 +92,7 @@ def create_share_link(
     file_version="Original",
     hide_download_button=0,
 ):
-    doc = frappe.get_doc("Document", document)
+    doc = get_standalone_document(document)
     doc.check_permission("share")
     if doc.is_deleted:
         frappe.throw("Restore the document before sharing it.")
@@ -132,7 +133,7 @@ def create_share_link(
 @frappe.whitelist()
 def revoke_share_link(name):
     link = frappe.get_doc("Document Share Link", name)
-    document = frappe.get_doc("Document", link.document)
+    document = get_standalone_document(link.document)
     document.check_permission("share")
     link.db_set("enabled", 0)
     return {"name": link.name, "enabled": 0}
@@ -140,7 +141,7 @@ def revoke_share_link(name):
 
 @frappe.whitelist()
 def get_share_links(document):
-    doc = frappe.get_doc("Document", document)
+    doc = get_standalone_document(document)
     doc.check_permission("share")
     return frappe.get_all(
         "Document Share Link",

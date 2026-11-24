@@ -3,6 +3,7 @@ import re
 import time
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import is_standalone, standalone_filters
 from frappe.utils import add_to_date, getdate, now_datetime
 
 from document_management.frappe_document_management.rag.config import get_rag_config
@@ -120,7 +121,7 @@ def get_allowed_documents(filters, user):
 
     names = frappe.get_list(
         "Document",
-        filters=db_filters,
+        filters=standalone_filters(db_filters),
         pluck="name",
         limit_page_length=100000,
     )
@@ -222,6 +223,8 @@ def _still_allowed(chunk, user):
     if not frappe.db.exists("Document", chunk.document):
         return False
     document = frappe.get_doc("Document", chunk.document)
+    if not is_standalone(document):
+        return False
     if document.is_deleted:
         return False
     return bool(frappe.has_permission("Document", "read", doc=document, user=user))

@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import standalone_filters
 from frappe.utils.file_manager import get_file_path
 
 from document_management.frappe_document_management.utils.file_crypto import (
@@ -216,6 +217,7 @@ def check_document_archive():
     issues = []
     documents = frappe.get_all(
         "Document",
+        filters=standalone_filters(),
         fields=["name", "ocr_status", "ocr_content", "is_deleted"],
         limit_page_length=0,
     )

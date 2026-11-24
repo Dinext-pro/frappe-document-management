@@ -1,6 +1,7 @@
 import os
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import get_standalone_document, standalone_filters
 from frappe.utils import add_days, add_to_date, now_datetime
 
 from document_management.frappe_document_management.utils.archive_portability import (
@@ -73,6 +74,7 @@ def _delete_physical_files(paths):
 
 
 def permanently_delete_document(document_name):
+    get_standalone_document(document_name)
     files = _document_files(document_name)
     file_names = [row.name for row in files]
     cleanup_paths = _physical_cleanup_paths(files)
@@ -101,10 +103,10 @@ def purge_expired_trash():
     cutoff = add_days(now_datetime(), -retention_days)
     expired = frappe.get_all(
         "Document",
-        filters={
+        filters=standalone_filters({
             "is_deleted": 1,
             "deleted_at": ["<=", cutoff],
-        },
+        }),
         pluck="name",
         limit_page_length=0,
     )

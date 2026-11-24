@@ -4,6 +4,7 @@ from html import unescape
 from html.parser import HTMLParser
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import is_standalone, standalone_filters
 from document_management.search import tantivy_backend, semantic_backend
 from document_management.search.query import (
     current_search_language,
@@ -173,6 +174,8 @@ def _enqueue_indexing(doc_type, doc_name, queue="short", timeout=300):
 
 
 def handle_doc_save(doc, method=None):
+    if doc.doctype == "Document" and not is_standalone(doc):
+        return
     try:
         settings = frappe.get_single('Document Management Settings')
     except Exception:
@@ -210,7 +213,7 @@ def run_indexing_background(doc_type, doc_name):
         return
         
     indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
-    if doc_type == "Document" and doc.get("is_deleted"):
+    if doc_type == "Document" and (doc.get("is_deleted") or not is_standalone(doc)):
         semantic_backend.remove_document(doc_type, doc_name)
         return
     content = get_indexable_content(doc)
@@ -573,6 +576,8 @@ def rebuild_index():
 
 @frappe.whitelist()
 def extract_and_index_ocr(doc_type, doc_name):
+    if doc_type == "Document" and not frappe.db.exists("Document", standalone_filters({"name": doc_name})):
+        return
     doc = frappe.get_doc(doc_type, doc_name)
     doc.check_permission("write")
     if doc_type == "Document":

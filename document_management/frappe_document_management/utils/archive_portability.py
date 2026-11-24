@@ -8,6 +8,7 @@ import zipfile
 from pathlib import PurePosixPath
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import get_standalone_document
 from frappe.utils import now_datetime
 from frappe.utils.file_manager import get_file_path
 
@@ -161,7 +162,7 @@ def build_document_archive_file(document_names, target_path=None):
             allowZip64=True,
         ) as zf:
             for document_name in names:
-                doc = frappe.get_doc("Document", document_name)
+                doc = get_standalone_document(document_name)
                 doc.check_permission("read")
                 entry = {
                     "source_name": doc.name,

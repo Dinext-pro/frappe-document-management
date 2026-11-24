@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import is_standalone, standalone_filters
 import numpy as np
 from filelock import FileLock
 from frappe.utils.file_manager import get_file_path
@@ -404,7 +405,7 @@ def rebuild_index():
     try:
         documents = frappe.get_all(
             "Document",
-            filters={"is_deleted": 0},
+            filters=standalone_filters({"is_deleted": 0}),
             pluck="name",
         )
         all_rows = []
@@ -485,7 +486,7 @@ def _remove_document_from_indexes(rows, faiss_index, text_index):
 
 def index_document(document_name):
     document = frappe.get_doc("Document", document_name)
-    if document.is_deleted:
+    if document.is_deleted or not is_standalone(document):
         return remove_document(document_name)
     rows = build_document_chunks(document)
     vectors = embed_texts([row["_embedding_text"] for row in rows]) if rows else None
@@ -581,7 +582,7 @@ def refresh_document_indexes(document_names, remove=False):
                 remove_document(document_name)
             elif frappe.db.exists(
                 "Document",
-                {"name": document_name, "is_deleted": 0},
+                standalone_filters({"name": document_name, "is_deleted": 0}),
             ):
                 index_document(document_name)
             completed.append(document_name)

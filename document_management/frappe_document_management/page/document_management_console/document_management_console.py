@@ -8,6 +8,7 @@ import tempfile
 import zipfile
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import get_standalone_document, standalone_filters
 from frappe.utils import now_datetime
 
 from document_management.frappe_document_management.utils.document_access import (
@@ -111,7 +112,7 @@ def _document_names(raw_documents, maximum=100):
 def _authorized_documents(names, permission_type="write"):
     documents = []
     for name in names:
-        doc = frappe.get_doc("Document", name)
+        doc = get_standalone_document(name)
         doc.check_permission(permission_type)
         documents.append(doc)
     return documents
@@ -184,7 +185,7 @@ def _save_version_file(version, folder=None, upload=None):
         }
     ).insert(ignore_permissions=True)
     if version.parent:
-        doc = frappe.get_doc("Document", version.parent)
+        doc = get_standalone_document(version.parent)
         file_doc = organize_file_for_version(file_doc, doc, version, "attachment")
     encrypt_file_doc(file_doc)
     frappe.db.set_value(
@@ -204,7 +205,7 @@ def _save_version_file(version, folder=None, upload=None):
 
 @frappe.whitelist()
 def download_document_file(document, file_version="Original", attachment=0):
-    doc = frappe.get_doc("Document", document)
+    doc = get_standalone_document(document)
     doc.check_permission("read")
     version = doc.get_current_version()
     if not version:
@@ -226,7 +227,7 @@ def download_document_file(document, file_version="Original", attachment=0):
 
 @frappe.whitelist()
 def render_document_pdf_page(document, page=1, file_version="Searchable PDF", dpi=144):
-    doc = frappe.get_doc("Document", document)
+    doc = get_standalone_document(document)
     doc.check_permission("read")
     version = doc.get_current_version()
     if not version:
@@ -419,7 +420,7 @@ def delete_saved_view(view):
 
 
 def _get_deleted_documents(search_text, filters, limit):
-    filters = {**filters, "is_deleted": 1}
+    filters = standalone_filters({**filters, "is_deleted": 1})
     or_filters = None
     if search_text:
         escaped = search_text.replace("%", r"\%").replace("_", r"\_")
@@ -441,7 +442,7 @@ def _get_deleted_documents(search_text, filters, limit):
     )
     visible = []
     for row in candidates:
-        doc = frappe.get_doc("Document", row.name)
+        doc = get_standalone_document(row.name)
         if frappe.has_permission(
             "Document",
             "read",
@@ -481,7 +482,7 @@ def get_documents(
         from document_management.search.query import significant_terms
 
         search_terms = significant_terms(advanced_query.highlight_query or search_text)
-    filters = {}
+    filters = standalone_filters()
     try:
         trash = bool(int(trash or 0))
     except (TypeError, ValueError):
@@ -793,14 +794,14 @@ def permanently_delete_documents(documents):
 def force_generate_pdf(doc_name):
     import shutil
     from frappe import _
-    frappe.get_doc("Document", doc_name).check_permission("write")
+    get_standalone_document(doc_name).check_permission("write")
     if not shutil.which("libreoffice"):
         return _("ERROR: LibreOffice is not installed on the server ('libreoffice' command not found). Please install it using: sudo apt-get install libreoffice-core --no-install-recommends")
 
     from document_management.frappe_document_management.doctype.document.document import convert_office_to_pdf
     try:
         status = convert_office_to_pdf(doc_name)
-        doc = frappe.get_doc("Document", doc_name)
+        doc = get_standalone_document(doc_name)
         doc.enqueue_ocr(enqueue_after_commit=False)
         return status
     except Exception as e:
@@ -814,7 +815,7 @@ def reprocess_ocr(doc_name):
         is_ocr_processing_stale,
     )
 
-    doc = frappe.get_doc("Document", doc_name)
+    doc = get_standalone_document(doc_name)
     doc.check_permission("write")
     version = doc.get_current_version()
     if not version:
@@ -984,7 +985,7 @@ def add_document_version(doc_name=None, change_log=None, folder=None):
     change_log = change_log or form.get("change_log")
     folder = folder or form.get("folder")
     upload = _upload_metadata()
-    doc = frappe.get_doc("Document", doc_name)
+    doc = get_standalone_document(doc_name)
     doc.check_permission("write")
     if doc.is_deleted:
         frappe.throw("Restore the document before adding a version.")

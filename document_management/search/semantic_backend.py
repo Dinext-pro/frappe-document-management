@@ -1,4 +1,5 @@
 import frappe
+from document_management.frappe_document_management.utils.document_provider import standalone_filters
 
 from document_management.frappe_document_management.rag.index import (
     IndexRebuildRequired,
@@ -32,7 +33,7 @@ def remove_document(doc_type, doc_name=None):
 def search(query_str, limit=5):
     if not query_str:
         return []
-    allowed = frappe.get_list("Document", pluck="name", limit_page_length=100000)
+    allowed = frappe.get_list("Document", filters=standalone_filters(), pluck="name", limit_page_length=100000)
     try:
         chunks = search_chunks(query_str, allowed, limit=int(limit))
     except IndexRebuildRequired:

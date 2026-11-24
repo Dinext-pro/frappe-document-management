@@ -1,6 +1,7 @@
 import json
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import get_standalone_document
 from frappe.utils import add_to_date, get_datetime, now_datetime
 
 from document_management.frappe_document_management.rag.config import get_rag_config
@@ -315,7 +316,7 @@ def get_latest_rag_evaluation():
 
 @frappe.whitelist()
 def get_document_pdf_url(document):
-    doc = frappe.get_doc("Document", document)
+    doc = get_standalone_document(document)
     doc.check_permission("read")
     latest_version = doc.get_current_version()
     if latest_version:

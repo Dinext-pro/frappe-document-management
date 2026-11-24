@@ -1,4 +1,5 @@
 import frappe
+from document_management.frappe_document_management.utils.document_provider import standalone_filters
 import os
 
 MODEL_DIR = frappe.utils.get_site_path("private", "files", "models")
@@ -24,7 +25,9 @@ def train_tagger_model():
             return False # No auto ML tags configured
 
         # Fetch all documents with OCR content
-        docs = frappe.get_all("Document", filters={"ocr_status": "Completed"}, fields=["name", "ocr_content"])
+        docs = frappe.get_all(
+            "Document", filters=standalone_filters({"ocr_status": "Completed"}), fields=["name", "ocr_content"]
+        )
         
         X_texts = []
         Y_labels = []

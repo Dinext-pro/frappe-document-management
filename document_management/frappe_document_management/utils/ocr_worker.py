@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import is_standalone, standalone_filters
 from frappe.utils import add_to_date, get_datetime, now_datetime
 from frappe.utils.file_manager import get_file_path
 
@@ -306,7 +307,9 @@ def recover_stale_ocr_jobs():
     )
     recovered = []
     for row in processing_versions:
-        if not is_ocr_processing_stale(row):
+        if not is_ocr_processing_stale(row) or not frappe.db.exists(
+            "Document", standalone_filters({"name": row.parent})
+        ):
             continue
         frappe.db.sql(
             "SELECT name FROM `tabDocument Version` WHERE name = %s FOR UPDATE",
@@ -626,6 +629,8 @@ def process_ocr(doc_name):
     lease_token = None
     try:
         doc = frappe.get_doc("Document", doc_name)
+        if not is_standalone(doc):
+            return
         version = _current_version(doc)
         if not version:
             doc.db_set("ocr_status", "Pending")

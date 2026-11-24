@@ -3,6 +3,7 @@ import shlex
 from dataclasses import dataclass, field
 
 import frappe
+from document_management.frappe_document_management.utils.document_provider import standalone_filters
 from frappe.utils import getdate
 
 
@@ -133,7 +134,7 @@ def _matching_names(filters=None, or_filters=None):
     return set(
         frappe.get_all(
             "Document",
-            filters=filters or {},
+            filters=standalone_filters(filters),
             or_filters=or_filters,
             pluck="name",
             limit_page_length=100000,

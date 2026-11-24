@@ -3,6 +3,13 @@ import subprocess
 import zipfile
 from pathlib import Path
 import frappe
+from document_management.frappe_document_management.utils.document_provider import (
+    get_standalone_document,
+    is_standalone,
+    require_standalone,
+    standalone_condition,
+    uses_standalone_controller,
+)
 from frappe.model.document import Document as FrappeDocument
 from frappe.utils.file_manager import get_file_path
 
@@ -30,6 +37,8 @@ class Document(FrappeDocument):
         self.name = frappe.model.naming.make_autoname("DOC-.YYYY.-.####")
 
     def before_save(self):
+        if not uses_standalone_controller(self):
+            return
         self.sync_current_version()
         self.force_attachments_private()
         organize_document_files(self)
@@ -39,14 +48,22 @@ class Document(FrappeDocument):
         self.validate_duplicate_files()
 
     def after_insert(self):
+        if not is_standalone(self):
+            return
         self.enqueue_processing()
         publish_document_change(self)
 
     def on_update(self):
+        if not is_standalone(self):
+            return
         self.enqueue_processing()
         publish_document_change(self)
 
+    def before_rename(self, *args, **kwargs):
+        require_standalone(self)
+
     def on_trash(self):
+        require_standalone(self)
         if frappe.db.exists("DocType", "Document Page"):
             frappe.db.delete("Document Page", {"document": self.name})
         if frappe.db.exists("DocType", "Document Share Link"):
@@ -463,7 +480,7 @@ def _ensure_libreoffice_component(extension):
 def convert_office_to_pdf(doc_name):
     from frappe import _
 
-    doc = frappe.get_doc("Document", doc_name)
+    doc = get_standalone_document(doc_name)
     for version in doc.versions:
         if not version.attachment or version.preview_attachment:
             continue
@@ -498,7 +515,7 @@ def convert_office_to_pdf_job(doc_name, version_name):
     frappe.db.commit()
 
     try:
-        doc = frappe.get_doc("Document", doc_name)
+        doc = get_standalone_document(doc_name)
         version = next(
             row for row in doc.versions if row.name == version_name
         )
@@ -525,6 +542,8 @@ def _sha256_file(file_path, block_size=1024 * 1024):
 
 
 def has_permission(doc, ptype="read", user=None):
+    if not is_standalone(doc):
+        return False
     if not user:
         user = frappe.session.user
     if user == "Administrator":
@@ -596,10 +615,11 @@ def has_permission(doc, ptype="read", user=None):
     return True
 
 def get_permission_query_conditions(user):
+    scope = standalone_condition()
     if not user:
         user = frappe.session.user
     if user == "Administrator":
-        return "`tabDocument`.is_deleted = 0"
+        return scope + "`tabDocument`.is_deleted = 0"
 
     user_roles = frappe.get_roles(user)
     roles_str = ",".join(frappe.db.escape(role) for role in user_roles)
@@ -661,7 +681,7 @@ def get_permission_query_conditions(user):
     """
 
     return (
-        f"`tabDocument`.is_deleted = 0 AND "
+        f"{scope}`tabDocument`.is_deleted = 0 AND "
         f"(`tabDocument`.owner = {escaped_user} "
         f"OR ({doc_cond}) OR ({fallback_cond}) OR ({shared_cond}))"
     )

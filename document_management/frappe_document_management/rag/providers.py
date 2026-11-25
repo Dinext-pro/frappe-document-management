@@ -24,7 +24,7 @@ def _local_reranker(model_name):
     return CrossEncoder(model_name)
 
 
-def _normalize(vectors):
+def normalize_embeddings(vectors):
     array = np.asarray(vectors, dtype="float32")
     if array.ndim == 1:
         array = array.reshape(1, -1)
@@ -99,7 +99,7 @@ def embed_texts(texts):
         model = _local_embedding_model(config.embedding_model)
         vectors = model.encode(texts, show_progress_bar=False)
 
-    return _normalize(vectors)
+    return normalize_embeddings(vectors)
 
 
 def embedding_signature():
@@ -167,8 +167,12 @@ def stream_chat(messages):
         ),
         timeout=config.timeout,
     )
+    yield from stream_with_client(client, config.chat_model, messages)
+
+
+def stream_with_client(client, model, messages):
     response = client.chat.completions.create(
-        model=config.chat_model,
+        model=model,
         messages=messages,
         stream=True,
     )

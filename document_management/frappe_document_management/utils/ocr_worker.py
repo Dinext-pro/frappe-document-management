@@ -94,6 +94,10 @@ def _openai_ocr_image(client, model, encoded_image, mime_type):
 
 def extract_pages_with_openai(file_path, ext, page_numbers=None):
     """Fallback OCR for content that local extraction could not read."""
+    from document_management.frappe_document_management.rag.config import standalone_ai_disabled
+
+    if standalone_ai_disabled():
+        return []
     try:
         settings = frappe.get_single("Document Management Settings")
         if not settings.enable_openai_for_ocr or not settings.openai_api_key:

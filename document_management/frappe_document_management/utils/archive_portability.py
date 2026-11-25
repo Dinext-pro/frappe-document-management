@@ -78,15 +78,17 @@ def _archive_file(zf, document_name, version, kind, file_url, checksum):
     if not path or not os.path.isfile(path):
         frappe.throw(f"Archive source file is missing: {file_url}")
     content = read_file_bytes(file_url)
+    return write_archive_member(zf, document_name, version.version_number, kind, os.path.basename(path), content, checksum)
+
+
+def write_archive_member(zf, document_name, version_number, kind, filename, content, checksum=None):
     actual_checksum = hashlib.sha256(content).hexdigest()
-    size = len(content)
     if checksum and actual_checksum != checksum:
-        frappe.throw(f"Archive source checksum mismatch: {file_url}")
-    filename = os.path.basename(path)
+        frappe.throw("Archive source checksum mismatch.")
     archive_path = (
         PurePosixPath("documents")
         / document_name
-        / str(version.version_number)
+        / str(version_number)
         / kind
         / filename
     ).as_posix()
@@ -95,7 +97,7 @@ def _archive_file(zf, document_name, version, kind, file_url, checksum):
         "path": archive_path,
         "filename": filename,
         "checksum": actual_checksum,
-        "size": size,
+        "size": len(content),
     }
 
 
@@ -252,11 +254,15 @@ def _safe_info(zf, member):
         frappe.throw(f"Archive member is missing: {member}")
 
 
-def _read_manifest(zf):
+def read_archive_manifest(zf):
+    _validate_zip(zf)
     info = _safe_info(zf, "manifest.json")
     if info.file_size > 25 * 1024 * 1024:
         frappe.throw("Archive manifest is too large.")
-    return json.loads(zf.read(info))
+    manifest = json.loads(zf.read(info))
+    if not isinstance(manifest, dict) or manifest.get("format") != ARCHIVE_FORMAT or manifest.get("version") != ARCHIVE_VERSION:
+        frappe.throw("Unsupported document archive format.")
+    return manifest
 
 
 def _validate_zip(zf):
@@ -264,10 +270,16 @@ def _validate_zip(zf):
     if len(members) > MAX_ARCHIVE_MEMBERS:
         frappe.throw("Document archive contains too many files.")
     total_size = 0
+    seen = set()
     for info in members:
         path = PurePosixPath(info.filename)
-        if path.is_absolute() or ".." in path.parts:
-            frappe.throw("Archive contains an unsafe file path.")
+        if (
+            path.is_absolute() or ".." in path.parts or "\\" in info.filename
+            or info.filename != path.as_posix() or info.orig_filename != info.filename
+            or info.filename in seen or info.flag_bits & 1
+        ):
+            frappe.throw("Archive contains an invalid or repeated file path.")
+        seen.add(info.filename)
         total_size += info.file_size
         if total_size > MAX_UNCOMPRESSED_SIZE:
             frappe.throw("Document archive is too large.")
@@ -382,25 +394,37 @@ def _restore_dependencies(manifest):
         tag.insert(ignore_permissions=True)
 
 
-def _extract_blob(zf, descriptor, version_name, fieldname):
-    if not descriptor:
-        return None, None
+def copy_archive_member(zf, descriptor, target=None):
+    """Verify the v2 descriptor while optionally copying to a caller-owned stream."""
     info = _safe_info(zf, descriptor["path"])
     if info.file_size != int(descriptor["size"]):
         frappe.throw("Archive file size does not match its manifest.")
-    extension = os.path.splitext(descriptor["filename"])[1]
-    filename = f"archive-{frappe.generate_hash(length=20)}{extension}"
-    destination = frappe.get_site_path("private", "files", filename)
     digest = hashlib.sha256()
     size = 0
-    with zf.open(info) as source, open(destination, "xb") as target:
+    with zf.open(info) as source:
         while block := source.read(1024 * 1024):
             digest.update(block)
             size += len(block)
-            target.write(block)
+            if target is not None:
+                target.write(block)
     if size != int(descriptor["size"]) or digest.hexdigest() != descriptor["checksum"]:
-        os.remove(destination)
         frappe.throw("Archive file checksum does not match its manifest.")
+
+
+def _extract_blob(zf, descriptor, version_name, fieldname):
+    if not descriptor:
+        return None, None
+    extension = os.path.splitext(descriptor["filename"])[1]
+    filename = f"archive-{frappe.generate_hash(length=20)}{extension}"
+    destination = frappe.get_site_path("private", "files", filename)
+    target = open(destination, "xb")
+    try:
+        with target:
+            copy_archive_member(zf, descriptor, target)
+    except Exception:
+        if os.path.isfile(destination):
+            os.remove(destination)
+        raise
     file_doc = frappe.get_doc(
         {
             "doctype": "File",
@@ -451,13 +475,7 @@ def restore_document_archive(content):
             handle.write(content)
             archive_path = handle.name
         with zipfile.ZipFile(archive_path) as zf:
-            _validate_zip(zf)
-            manifest = _read_manifest(zf)
-            if (
-                manifest.get("format") != ARCHIVE_FORMAT
-                or manifest.get("version") != ARCHIVE_VERSION
-            ):
-                frappe.throw("Unsupported document archive format.")
+            manifest = read_archive_manifest(zf)
             _validate_prerequisites(manifest)
             has_department = department_doctype_exists()
             _restore_dependencies(manifest)
@@ -468,7 +486,7 @@ def restore_document_archive(content):
                 doc = frappe.new_doc("Document")
                 for field in PARENT_FIELDS:
                     doc.set(field, metadata.get(field))
-                doc.owner = entry["owner"]
+                doc.owner = entry.get("owner") or frappe.session.user
                 for tag in entry.get("tags") or []:
                     doc.append("tags", {"tag": tag})
                 for role in entry.get("roles_with_access") or []:
@@ -560,7 +578,7 @@ def restore_document_archive(content):
                     "Document",
                     doc.name,
                     {
-                        "owner": entry["owner"],
+                        "owner": doc.owner,
                         "creation": entry.get("creation"),
                         "modified": entry.get("modified"),
                     },

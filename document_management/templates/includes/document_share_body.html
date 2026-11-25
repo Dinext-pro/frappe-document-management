@@ -1,0 +1,21 @@
+<div
+    id="shared-document-app"
+    class="shared-document-shell"
+    data-kind="{{ kind | e }}"
+    data-preview-url="{{ preview_url | e }}"
+>
+    <div class="shared-document-toolbar">
+        <div class="shared-document-title">
+            <strong>{{ document_title | e }}</strong>
+            <span>{{ filename | e }}</span>
+        </div>
+        {% if show_download_button %}
+            <a class="shared-document-download" href="{{ download_url | e }}">
+                {{ _('Download') if isolated_pdf else 'Descargar' }}
+            </a>
+        {% endif %}
+    </div>
+    <div class="shared-document-viewer" id="shared-document-viewer">
+        <div class="shared-document-empty">{{ _('Loading document...') if isolated_pdf else 'Cargando documento...' }}</div>
+    </div>
+</div>

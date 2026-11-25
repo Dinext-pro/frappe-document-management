@@ -1,6 +1,7 @@
 import frappe
 from document_management.frappe_document_management.utils.document_provider import standalone_filters
 import os
+from document_management.frappe_document_management.rag.config import standalone_ai_disabled
 
 MODEL_DIR = frappe.utils.get_site_path("private", "files", "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "tagger_model.joblib")
@@ -8,6 +9,8 @@ VECTORIZER_PATH = os.path.join(MODEL_DIR, "tagger_vectorizer.joblib")
 MLB_PATH = os.path.join(MODEL_DIR, "tagger_mlb.joblib")
 
 def train_tagger_model():
+    if standalone_ai_disabled():
+        return False
     try:
         import joblib
         from sklearn.feature_extraction.text import TfidfVectorizer
@@ -79,7 +82,7 @@ def train_tagger_model():
         return False
 
 def predict_tags(doc, extracted_text):
-    if not extracted_text:
+    if not extracted_text or standalone_ai_disabled():
         return False
         
     try:

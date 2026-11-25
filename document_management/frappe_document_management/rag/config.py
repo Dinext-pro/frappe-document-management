@@ -63,7 +63,13 @@ def _password(settings, fieldname):
         return None
 
 
+def standalone_ai_disabled():
+    return bool(getattr(frappe.local, "site", None) and any(frappe.get_hooks("document_management_disable_standalone_ai")))
+
+
 def get_rag_config():
+    if standalone_ai_disabled():
+        frappe.throw(frappe._("Use the document provider configured for this site."))
     settings = frappe.get_single("Document Management Settings")
     provider = settings.get("chat_provider") or "OpenAI"
     embedding_provider = (

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="{{ lang | default('en', true) | e }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>{{ document_title | e }}</title>
+</head>
+<body>
+
+{% include "templates/includes/document_share_styles.html" %}
+{% include "templates/includes/document_share_body.html" %}
+
+<template id="shared-pdf-template">
+    <main class="shared-document-viewer" style="height: 100%">
+        <div class="loan-pdf-shell">
+            <div class="loan-pdf-toolbar">
+                <button type="button" id="pdf-previous" aria-label="{{ _('Previous page') | e }}">&#8249;</button>
+                <span id="pdf-page-count"></span>
+                <button type="button" id="pdf-next" aria-label="{{ _('Next page') | e }}">&#8250;</button>
+                <button type="button" id="pdf-zoom-out" aria-label="{{ _('Zoom out') | e }}">&#8722;</button>
+                <button type="button" id="pdf-zoom-in" aria-label="{{ _('Zoom in') | e }}">+</button>
+                <input id="pdf-search" type="search" placeholder="{{ _('Search in document') | e }}"
+                    aria-label="{{ _('Search in document') | e }}">
+                <button type="button" id="pdf-find-next" aria-label="{{ _('Next match') | e }}">&#8595;</button>
+                <span id="pdf-match-count" aria-live="polite"></span>
+            </div>
+            <div class="loan-pdf-viewport">
+                <div class="loan-pdf-container" id="pdf-pages"></div>
+                <div class="shared-document-empty" id="pdf-error" hidden>{{ _('Could not load the PDF preview.') | e }}</div>
+            </div>
+        </div>
+    </main>
+    <script src="/assets/document_management/js/pdf_search_viewer.v5_7_284_9.js"></script>
+    <script src="/assets/document_management/js/guest_pdf_viewer.js"></script>
+</template>
+
+<script>
+    (function() {
+        const app = document.getElementById('shared-document-app');
+        const viewer = document.getElementById('shared-document-viewer');
+        const previewUrl = app.dataset.previewUrl;
+        if (!previewUrl) {
+            viewer.firstElementChild.textContent = {{ _('Preview unavailable.') | tojson }};
+            return;
+        }
+
+        const frame = document.createElement('iframe');
+        frame.title = {{ _('PDF preview') | tojson }};
+        frame.setAttribute('sandbox', 'allow-scripts');
+        frame.referrerPolicy = 'no-referrer';
+        viewer.setAttribute('aria-busy', 'true');
+        function finishLoading(error) {
+            viewer.setAttribute('aria-busy', 'false');
+            window.removeEventListener('message', onFrameStatus);
+            if (error) {
+                const message = document.createElement('div');
+                message.className = 'shared-document-empty';
+                message.textContent = {{ _('Could not load the PDF preview.') | tojson }};
+                viewer.replaceChildren(message);
+            }
+        }
+        function onFrameStatus(event) {
+            if (event.source !== frame.contentWindow || event.origin !== 'null') return;
+            if (event.data === 'document-share-pdf-ready') finishLoading(false);
+            if (event.data === 'document-share-pdf-error') finishLoading(true);
+        }
+        window.addEventListener('message', onFrameStatus);
+        const origin = window.location.origin;
+        const assets = origin + '/assets/document_management/js/';
+        const policy = "default-src 'none'; connect-src blob:; img-src data: blob:; font-src data: blob:; "
+            + "style-src 'unsafe-inline'; script-src 'wasm-unsafe-eval' "
+            + assets + "pdf_search_viewer.v5_7_284_9.js " + assets + "guest_pdf_viewer.js";
+        const styles = document.getElementById('shared-document-styles').outerHTML;
+        const viewerTemplate = document.getElementById('shared-pdf-template').innerHTML;
+        frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8">'
+            + '<meta name="referrer" content="no-referrer">'
+            + '<meta http-equiv="Content-Security-Policy" content="' + policy + '">'
+            + styles + '</head><body>' + viewerTemplate + '</body></html>';
+        frame.addEventListener('load', async () => {
+            try {
+                const response = await fetch(previewUrl, {cache: 'no-store', credentials: 'omit'});
+                if (!response.ok || response.headers.get('Content-Type') !== 'application/pdf') {
+                    throw new Error('PDF preview request failed');
+                }
+                const content = await response.arrayBuffer();
+                frame.contentWindow.postMessage(content, '*', [content]);
+            } catch {
+                finishLoading(true);
+            }
+        }, {once: true});
+        viewer.replaceChildren(frame);
+    })();
+</script>
+</body>
+</html>

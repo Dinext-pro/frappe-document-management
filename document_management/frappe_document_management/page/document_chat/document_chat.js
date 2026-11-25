@@ -4,12 +4,32 @@ frappe.pages['document-chat'].on_page_load = function(wrapper) {
         title: __('Document Chat'),
         single_column: true
     });
-    $(frappe.render_template('document_chat', {})).appendTo(page.main);
-    new DocumentChatController(wrapper, page);
+    wrapper.documentChatPage = page;
+};
+
+frappe.pages['document-chat'].on_page_show = function(wrapper) {
+    const page = wrapper.documentChatPage;
+    const adapter = frappe.pages['document-chat'].get_adapter?.(frappe.get_route());
+    const routeKey = adapter?.key || 'standalone';
+    if (wrapper.documentChatController && wrapper.documentChatRoute === routeKey) {
+        if (adapter) wrapper.documentChatController.loadSessions(adapter.session);
+        return;
+    }
+    if (wrapper.documentChatController) {
+        wrapper.documentChatController.stopPolling();
+        wrapper.documentChatController.unsubscribeRealtime();
+        page.clear_menu();
+    }
+    const root = $('<div></div>').appendTo($(page.main).empty());
+    $(frappe.render_template('document_chat', {})).appendTo(root);
+    wrapper.documentChatRoute = routeKey;
+    const Controller = adapter?.controller || DocumentChatController;
+    wrapper.documentChatController = new Controller(root, page, adapter);
 };
 
 class DocumentChatController {
-    constructor(wrapper, page) {
+    constructor(wrapper, page, adapter) {
+        this.adapter = adapter;
         this.wrapper = $(wrapper);
         this.page = page;
         this.session = null;
@@ -20,7 +40,7 @@ class DocumentChatController {
         this.realtimeEvent = null;
         this.bind();
         this.setupAdminActions();
-        this.loadSessions();
+        this.loadSessions(adapter?.session);
     }
 
     bind() {
@@ -698,3 +718,5 @@ class DocumentChatController {
         if (body.length) body.scrollTop(body[0].scrollHeight);
     }
 }
+
+frappe.pages['document-chat'].Controller = DocumentChatController;

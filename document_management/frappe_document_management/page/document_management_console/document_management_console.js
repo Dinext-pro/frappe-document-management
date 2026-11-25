@@ -1339,7 +1339,8 @@ class DocumentManagementConsole {
                 };
 
                 const manage_share_links = (doc) => {
-                    if (!doc) return;
+                    if (!doc || (provider && !adapter?.share_methods)) return;
+                    const share_methods = adapter?.share_methods;
                     const dialog = new frappe.ui.Dialog({
                         title: __('External share links'),
                         fields: [
@@ -1355,7 +1356,7 @@ class DocumentManagementConsole {
                                 fieldtype: 'Select',
                                 label: __('File version'),
                                 options: 'Original\nSearchable PDF',
-                                default: 'Original',
+                                default: share_methods ? 'Searchable PDF' : 'Original',
                                 reqd: 1
                             },
                             {
@@ -1372,9 +1373,10 @@ class DocumentManagementConsole {
                         primary_action_label: __('Create and copy link'),
                         primary_action: (values) => {
                             frappe.call({
-                                method: 'document_management.frappe_document_management.utils.document_sharing.create_share_link',
+                                method: share_methods?.create || 'document_management.frappe_document_management.utils.document_sharing.create_share_link',
                                 args: {
                                     document: doc.name,
+                                    ...(share_methods ? { revision: doc.revision } : {}),
                                     expiration_days: values.expiration_days,
                                     file_version: values.file_version,
                                     hide_download_button: values.hide_download_button ? 1 : 0
@@ -1394,7 +1396,7 @@ class DocumentManagementConsole {
                     });
                     const load_links = () => {
                         frappe.call({
-                            method: 'document_management.frappe_document_management.utils.document_sharing.get_share_links',
+                            method: share_methods?.list || 'document_management.frappe_document_management.utils.document_sharing.get_share_links',
                             args: {document: doc.name},
                             callback: (r) => {
                                 const links = r.message || [];
@@ -1411,7 +1413,7 @@ class DocumentManagementConsole {
                                 `).join(''));
                                 wrapper.find('.revoke-share-link').on('click', function() {
                                     frappe.call({
-                                        method: 'document_management.frappe_document_management.utils.document_sharing.revoke_share_link',
+                                        method: share_methods?.revoke || 'document_management.frappe_document_management.utils.document_sharing.revoke_share_link',
                                         args: {name: this.dataset.name},
                                         callback: load_links
                                     });
@@ -1515,7 +1517,8 @@ class DocumentManagementConsole {
                 // A page_js provider owns data loading and receives reactive console state.
                 // Its optional Vue components fill the extension points in the template.
                 const adapter = provider?.setup({
-                    Vue, documents, categories, tags, selected_doc, loading, filters, view_mode, is_fullscreen
+                    Vue, documents, categories, tags, selected_doc, loading, filters, view_mode, is_fullscreen,
+                    manage_share_links
                 });
                 const extensions = adapter?.components || {};
                 const hide_empty_state = adapter?.hide_empty_state || false;

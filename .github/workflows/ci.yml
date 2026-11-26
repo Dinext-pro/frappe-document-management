@@ -26,7 +26,7 @@ jobs:
           node-version: "22"
 
       - name: Install lint and standalone test tools
-        run: python -m pip install --upgrade pip ruff pytest cryptography numpy werkzeug
+        run: python -m pip install --upgrade pip ruff pytest cryptography numpy werkzeug jinja2
 
       - name: Lint Python with Ruff
         run: ruff check document_management
@@ -50,14 +50,15 @@ jobs:
             node --check "$f"
           done
           python -c "
-          import pathlib, re, subprocess, tempfile
-          html = pathlib.Path('document_management/www/document_share.html').read_text(encoding='utf-8')
-          m = re.search(r'<script>(.*?)</script>', html, flags=re.DOTALL)
-          assert m, 'Missing inline script in document_share.html'
-          with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as f:
-              f.write(m.group(1))
-              f.flush()
-              subprocess.run(['node', '--check', f.name], check=True)
+          import pathlib, re, subprocess
+          from jinja2 import Environment
+          for source in ('www/document_share.html', 'templates/includes/document_share_isolated.html'):
+              html = (pathlib.Path('document_management') / source).read_text(encoding='utf-8')
+              scripts = [body for body in re.findall(r'<script\b[^>]*>(.*?)</script>', html, re.DOTALL) if body.strip()]
+              assert scripts, f'Missing inline script in {source}'
+              for body in scripts:
+                  rendered = Environment().from_string(body).render(_=str)
+                  subprocess.run(['node', '--check'], input=rendered, text=True, check=True)
           "
 
       - name: Run JavaScript unit tests

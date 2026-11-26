@@ -31,6 +31,7 @@ class IndexedDocTypesSearchController {
         this.facetsTruncated = false;
         this.currentQuery = '';
         this.currentTerms = [];
+        this.foldedHighlightTerms = [];
         this.currentPage = 1;
         this.pageLength = 25;
         this.sortBy = 'relevance';
@@ -368,6 +369,7 @@ class IndexedDocTypesSearchController {
         this.searchRequest += 1;
         this.currentQuery = '';
         this.currentTerms = [];
+        this.foldedHighlightTerms = [];
         this.currentPage = 1;
         this.facets = {};
         this.lastAllFacets = {};
@@ -558,6 +560,9 @@ class IndexedDocTypesSearchController {
             });
             if (requestId !== this.searchRequest) return;
             this.currentTerms = response.terms || [];
+            this.foldedHighlightTerms = this.highlightTerms()
+                .map((term) => this.foldText(term))
+                .filter(Boolean);
             this.facets = response.facets || {};
             this.facetsTruncated = Boolean(response.facets_truncated);
             if (this.selectedTypes.size === 0) {
@@ -705,25 +710,32 @@ class IndexedDocTypesSearchController {
     highlightText(value) {
         const fragment = document.createDocumentFragment();
         const text = String(value || '');
-        const terms = this.highlightTerms()
-            .map((term) => this.foldText(term))
-            .filter(Boolean);
+        const terms = this.foldedHighlightTerms && this.foldedHighlightTerms.length
+            ? this.foldedHighlightTerms
+            : this.highlightTerms().map((term) => this.foldText(term)).filter(Boolean);
         if (!terms.length) {
             fragment.append(document.createTextNode(text));
             return fragment;
         }
 
-        const folded = this.foldTextWithOffsets(text);
+        const isAscii = /^[\x00-\x7f]*$/.test(text);
+        const folded = isAscii
+            ? { text: text.toLowerCase(), offsets: null }
+            : this.foldTextWithOffsets(text);
         const ranges = [];
         terms.forEach((term) => {
             let searchFrom = 0;
             while (searchFrom < folded.text.length) {
                 const index = folded.text.indexOf(term, searchFrom);
                 if (index < 0) break;
-                const first = folded.offsets[index];
-                const last = folded.offsets[index + term.length - 1];
-                if (first && last) {
-                    ranges.push([first.start, last.end]);
+                if (folded.offsets) {
+                    const first = folded.offsets[index];
+                    const last = folded.offsets[index + term.length - 1];
+                    if (first && last) {
+                        ranges.push([first.start, last.end]);
+                    }
+                } else {
+                    ranges.push([index, index + term.length]);
                 }
                 searchFrom = index + Math.max(term.length, 1);
             }

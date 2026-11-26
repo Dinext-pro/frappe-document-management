@@ -1670,3 +1670,163 @@ class TestIndexedDocTypesSearchPhaseDF(TestCase):
                     expr,
                     f"Escaped double quote inside microtemplate expression in {html_file}: {expr}",
                 )
+
+    def test_indexed_search_performance_optimizations_and_lazy_hooks(self):
+        import frappe
+
+        query_mod = importlib.import_module("document_management.search.query")
+        tb = importlib.import_module("document_management.search.tantivy_backend")
+        idx_mod = importlib.import_module("document_management.search.indexer")
+
+        # 1. Fast fold_text matches NFKD for ASCII + accented Spanish/French
+        self.assertEqual(query_mod.fold_text("INV-2026-001"), "inv-2026-001")
+        self.assertEqual(query_mod.fold_text("Período de Nómina — Crédits"), "periodo de nomina — credits")
+
+        # 2. build_natural_query avoids redundant raw+normalized clauses and limits FST regex scans
+        regex_calls = []
+
+        class FakeQuery:
+            @staticmethod
+            def empty_query():
+                return ("empty",)
+
+            @staticmethod
+            def boost_query(q, w):
+                return ("boost", q, w)
+
+            @staticmethod
+            def boolean_query(clauses):
+                return ("boolean", clauses)
+
+            @staticmethod
+            def regex_query(schema, field, pattern):
+                regex_calls.append((field, pattern))
+                return ("regex", field, pattern)
+
+            @staticmethod
+            def fuzzy_term_query(schema, field, term, distance=1, transposition_cost_one=True, prefix=False):
+                return ("fuzzy", field, term, distance)
+
+        fake_tantivy = SimpleNamespace(
+            Query=FakeQuery,
+            Occur=SimpleNamespace(Must="must", Should="should", MustNot="must_not"),
+        )
+
+        class FakeIndex:
+            schema = "fake-schema"
+
+            def parse_query(self, q, fields):
+                return ("parsed", q, tuple(fields))
+
+        with patch.dict(sys.modules, {"tantivy": fake_tantivy}):
+            q = query_mod.build_natural_query(
+                FakeIndex(),
+                "factura cliente",
+                tb.SEARCH_FIELDS,
+                language="es",
+                require_all=True,
+                allow_prefix=True,
+            )
+            rep = repr(q)
+            # Non-accented query uses normalized fields only (no redundant raw field queries)
+            self.assertIn("content_normalized", rep)
+            self.assertNotIn("('content',)", rep)
+            # Multi-term prefix regex runs only on doc_name_normalized (2 calls, not 8)
+            self.assertEqual(len(regex_calls), 2)
+            self.assertTrue(all(f == "doc_name_normalized" for f, _ in regex_calls))
+
+        # 3. iter_search disables count=True (enables Block-Max WAND) and supports deferred excerpts
+        seen_count_flags = []
+
+        class FakeSearcher:
+            def search(self, query, limit, count=True, offset=0):
+                seen_count_flags.append((count, limit))
+                return SimpleNamespace(hits=[(5.0, "d1")], count=None)
+
+            def doc(self, address):
+                return {
+                    "doc_type": ["Customer"],
+                    "doc_name": ["CUS-001"],
+                    "title": ["Acme"],
+                    "content": ["Cliente Acme factura mensual importante " * 20],
+                }
+
+        fake_idx = SimpleNamespace(reload=lambda: None, searcher=lambda: FakeSearcher())
+        with (
+            patch.object(tb, "get_index", return_value=fake_idx),
+            patch.object(tb, "build_natural_query", return_value="q"),
+        ):
+            batches = list(tb.iter_search("factura", batch_size=10, include_excerpt=False))
+        self.assertEqual(seen_count_flags, [(False, 11)])
+        self.assertEqual(batches[0][0]["excerpt"], "")
+        self.assertIn("_raw_content", batches[0][0])
+
+        # 4. indexer.search skips custom has_permission get_doc for Administrator and materializes excerpts lazily
+        get_doc_calls = []
+
+        def fake_iter_search(query_str, doctypes=None, batch_size=50, include_excerpt=True):
+            yield [
+                {
+                    "doc_type": "Customer",
+                    "doc_name": f"CUS-{i:03d}",
+                    "title": f"Customer {i}",
+                    "excerpt": "",
+                    "_raw_content": ("inicio " * 40) + "factura clave aqui" + (" fin" * 40),
+                    "score": 10.0 - i,
+                    "quality": 30,
+                    "match_type": "all_terms",
+                    "matched_terms": 1,
+                    "total_terms": 1,
+                    "coverage": 1.0,
+                }
+                for i in range(10)
+            ]
+
+        with (
+            patch.object(
+                idx_mod,
+                "_get_indexing_config",
+                return_value=(True, False, {"Customer"}, {"Customer": {}}),
+            ),
+            patch.object(tb, "iter_search", side_effect=fake_iter_search),
+            patch.object(
+                frappe,
+                "get_hooks",
+                return_value={"Customer": ["custom.perm"]},
+                create=True,
+            ),
+            patch.object(
+                frappe,
+                "get_list",
+                return_value=[
+                    frappe._dict(name=f"CUS-{i:03d}", modified="2026-10-01 00:00:00")
+                    for i in range(10)
+                ],
+                create=True,
+            ),
+            patch.object(
+                frappe,
+                "get_doc",
+                side_effect=lambda *a, **kw: get_doc_calls.append(a),
+            ),
+            patch.object(
+                frappe,
+                "has_permission",
+                return_value=True,
+                create=True,
+            ),
+        ):
+            frappe.session.user = "Administrator"
+            res = idx_mod.search("factura", page=1, page_length=3)
+
+            # Non-Administrator stops calling custom has_permission get_doc after page_length + 1 (4) hits, not all 10
+            frappe.session.user = "user@example.com"
+            res_user = idx_mod.search("factura", page=1, page_length=3)
+            frappe.session.user = "Administrator"
+
+        self.assertEqual(len(res["exact"]), 3)
+        self.assertEqual(len(res_user["exact"]), 3)
+        self.assertEqual(len(get_doc_calls), 4)
+        self.assertIn("elapsed_ms", res)
+        self.assertIn("factura clave", res["exact"][0]["excerpt"])
+        self.assertNotIn("_raw_content", res["exact"][0])

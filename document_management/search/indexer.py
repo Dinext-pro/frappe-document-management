@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import quote
@@ -8,6 +9,8 @@ import frappe
 from document_management.search import semantic_backend, tantivy_backend
 from document_management.search.query import (
     current_search_language,
+    fold_text,
+    make_excerpt,
     parse_search_syntax,
     significant_terms,
 )
@@ -340,6 +343,7 @@ def clear_indexing_config_cache():
         frappe.cache().delete_value("document_management:indexing_config")
     except Exception:
         pass
+    tantivy_backend.clear_index_cache()
 
 
 def _doctype_rules_from_settings(settings):
@@ -644,13 +648,13 @@ def _matches_date_range(modified_value, date_from, date_to):
     return True
 
 
-def _record_result(hit, metadata):
+def _record_result(hit, metadata, excerpt=None):
     return {
         "source": "full_text",
         "doc_type": hit["doc_type"],
         "doc_name": hit["doc_name"],
         "title": hit.get("title") or hit["doc_name"],
-        "excerpt": hit.get("excerpt") or "",
+        "excerpt": hit.get("excerpt") or "" if excerpt is None else excerpt,
         "score": float(hit.get("score") or 0),
         "quality": int(hit.get("quality") or 0),
         "match_type": hit.get("match_type") or "partial",
@@ -665,15 +669,48 @@ def _record_result(hit, metadata):
     }
 
 
-def _permitted_metadata(hits, date_from=None, date_to=None):
+def _check_custom_read_permission(doctype, name, custom_permission_hooks, user, cache):
+    if user == "Administrator" or doctype not in custom_permission_hooks:
+        return True
+    key = (doctype, str(name))
+    if key in cache:
+        return cache[key]
+    try:
+        doc = frappe.get_doc(doctype, name)
+        allowed = bool(
+            frappe.has_permission(
+                doctype,
+                "read",
+                doc=doc,
+                user=user,
+            )
+        )
+    except Exception:
+        allowed = False
+    cache[key] = allowed
+    return allowed
+
+
+def _permitted_metadata(
+    hits,
+    date_from=None,
+    date_to=None,
+    defer_custom_hooks=False,
+):
     by_doctype = {}
     for hit in hits:
         by_doctype.setdefault(hit["doc_type"], []).append(hit["doc_name"])
 
     permitted = {}
-    custom_permission_hooks = frappe.get_hooks("has_permission") or {}
+    user = getattr(getattr(frappe, "session", None), "user", None)
+    custom_permission_hooks = (
+        {}
+        if (defer_custom_hooks or user == "Administrator")
+        else (frappe.get_hooks("has_permission") or {})
+    )
     for doctype, names in by_doctype.items():
-        list_filters = {"name": ["in", list(dict.fromkeys(names))]}
+        unique_names = list(dict.fromkeys(names))
+        list_filters = {"name": ["in", unique_names]}
         if date_from and date_to:
             list_filters["modified"] = [
                 "between",
@@ -688,7 +725,7 @@ def _permitted_metadata(hits, date_from=None, date_to=None):
                 doctype,
                 filters=list_filters,
                 fields=["name", "modified"],
-                limit_page_length=len(names),
+                limit_page_length=len(unique_names),
             )
         except Exception:
             continue
@@ -701,13 +738,24 @@ def _permitted_metadata(hits, date_from=None, date_to=None):
                         doctype,
                         "read",
                         doc=doc,
-                        user=frappe.session.user,
+                        user=user,
                     ):
                         continue
                 except Exception:
                     continue
             permitted[(doctype, str(name))] = row
     return permitted
+
+
+def _materialize_excerpts(records, raw_contents, query, folded_terms):
+    for row, raw_content in zip(records, raw_contents):
+        if raw_content is not None and not row.get("excerpt"):
+            row["excerpt"] = make_excerpt(
+                raw_content,
+                query,
+                maximum=280,
+                folded_terms=folded_terms,
+            )
 
 
 def _sort_records(records, sort_by):
@@ -737,6 +785,7 @@ def search(
     date_from=None,
     date_to=None,
 ):
+    started_at = time.perf_counter()
     query = (query or "").strip()
     sort_by = str(sort_by or "relevance").strip()
     if sort_by not in ALLOWED_SORT_MODES:
@@ -753,6 +802,7 @@ def search(
             "sort_by": sort_by,
             "date_from": date_from,
             "date_to": date_to,
+            "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 1),
             "pagination": {
                 "page": 1,
                 "page_length": 25,
@@ -771,12 +821,8 @@ def search(
     except (TypeError, ValueError):
         page_length = 25
 
-    settings = frappe.get_single("Document Management Settings")
-    configured = {
-        row.document_type
-        for row in settings.get("indexed_doctypes", [])
-        if row.document_type and row.document_type != "Document"
-    }
+    enable_full_text, _, indexed_doctypes, _ = _get_indexing_config()
+    configured = {dt for dt in indexed_doctypes if dt and dt != "Document"}
     requested = _parse_doctypes(doctypes)
     generic_filter = (requested & configured) if requested else configured
 
@@ -786,7 +832,9 @@ def search(
         if (parsed_syntax["phrases"] or parsed_syntax["excluded"])
         else query
     )
-    terms = significant_terms(highlight_source)
+    search_language = current_search_language()
+    terms = significant_terms(highlight_source, language=search_language)
+    folded_terms = tuple(dict.fromkeys(fold_text(term) for term in terms if term))
 
     results = {
         "exact": [],
@@ -794,7 +842,7 @@ def search(
         "facets_truncated": False,
         "fuzzy_fallback": False,
         "configured_doctypes": sorted(configured),
-        "search_language": current_search_language(),
+        "search_language": search_language,
         "terms": terms,
         "sort_by": sort_by,
         "date_from": date_from,
@@ -807,20 +855,30 @@ def search(
         },
     }
     if not generic_filter:
+        results["elapsed_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
         return results
 
-    if settings.enable_full_text_search:
+    if enable_full_text:
         try:
             target_start = (page - 1) * page_length
             facets = {}
             facets_truncated = False
+            user = getattr(getattr(frappe, "session", None), "user", None)
+            custom_permission_hooks = (
+                {}
+                if user == "Administrator"
+                else (frappe.get_hooks("has_permission") or {})
+            )
+            custom_perm_cache = {}
             if sort_by == "relevance":
                 authorized_seen = 0
                 page_results = []
+                page_raw_contents = []
                 for batch in tantivy_backend.iter_search(
                     query,
                     doctypes=sorted(generic_filter),
-                    batch_size=max(page_length * 4, 100),
+                    batch_size=max(page_length * 2, 50),
+                    include_excerpt=False,
                 ):
                     filtered = [
                         hit
@@ -832,6 +890,7 @@ def search(
                         filtered,
                         date_from=date_from,
                         date_to=date_to,
+                        defer_custom_hooks=True,
                     )
                     for hit in filtered:
                         key = (hit["doc_type"], hit["doc_name"])
@@ -839,6 +898,14 @@ def search(
                             continue
                         meta = permitted[key]
                         if not _matches_date_range(meta.get("modified"), date_from, date_to):
+                            continue
+                        if not _check_custom_read_permission(
+                            hit["doc_type"],
+                            hit["doc_name"],
+                            custom_permission_hooks,
+                            user,
+                            custom_perm_cache,
+                        ):
                             continue
                         facets[hit["doc_type"]] = facets.get(hit["doc_type"], 0) + 1
                         if authorized_seen < target_start:
@@ -846,19 +913,31 @@ def search(
                             continue
                         if len(page_results) <= page_length:
                             page_results.append(_record_result(hit, meta))
+                            page_raw_contents.append(hit.get("_raw_content"))
                         authorized_seen += 1
+                        if len(page_results) > page_length and custom_permission_hooks:
+                            facets_truncated = True
+                            break
                     if len(page_results) > page_length:
                         facets_truncated = True
                         break
                 results["pagination"]["has_more"] = len(page_results) > page_length
-                results["exact"] = page_results[:page_length]
+                final_rows = page_results[:page_length]
+                _materialize_excerpts(
+                    final_rows,
+                    page_raw_contents[:page_length],
+                    query,
+                    folded_terms,
+                )
+                results["exact"] = final_rows
             else:
                 collected = []
-                max_collect = max(target_start + page_length + 1, 2500)
+                max_collect = max(target_start + page_length + 1, 500)
                 for batch in tantivy_backend.iter_search(
                     query,
                     doctypes=sorted(generic_filter),
-                    batch_size=max(page_length * 4, 250),
+                    batch_size=max(page_length * 4, 100),
+                    include_excerpt=False,
                 ):
                     filtered = [
                         hit
@@ -870,6 +949,7 @@ def search(
                         filtered,
                         date_from=date_from,
                         date_to=date_to,
+                        defer_custom_hooks=True,
                     )
                     for hit in filtered:
                         key = (hit["doc_type"], hit["doc_name"])
@@ -878,17 +958,36 @@ def search(
                         meta = permitted[key]
                         if not _matches_date_range(meta.get("modified"), date_from, date_to):
                             continue
+                        if not _check_custom_read_permission(
+                            hit["doc_type"],
+                            hit["doc_name"],
+                            custom_permission_hooks,
+                            user,
+                            custom_perm_cache,
+                        ):
+                            continue
                         facets[hit["doc_type"]] = facets.get(hit["doc_type"], 0) + 1
-                        collected.append(_record_result(hit, meta))
+                        collected.append((_record_result(hit, meta), hit.get("_raw_content")))
                         if len(collected) >= max_collect:
                             facets_truncated = True
                             break
                     if len(collected) >= max_collect:
                         break
-                ordered = _sort_records(collected, sort_by)
-                page_slice = ordered[target_start : target_start + page_length + 1]
+                ordered_records = _sort_records([item[0] for item in collected], sort_by)
+                raw_by_key = {
+                    (item[0]["doc_type"], item[0]["doc_name"]): item[1]
+                    for item in collected
+                }
+                page_slice = ordered_records[target_start : target_start + page_length + 1]
                 results["pagination"]["has_more"] = len(page_slice) > page_length
-                results["exact"] = page_slice[:page_length]
+                final_rows = page_slice[:page_length]
+                _materialize_excerpts(
+                    final_rows,
+                    [raw_by_key.get((row["doc_type"], row["doc_name"])) for row in final_rows],
+                    query,
+                    folded_terms,
+                )
+                results["exact"] = final_rows
 
             results["facets"] = facets
             results["facets_truncated"] = facets_truncated
@@ -912,6 +1011,7 @@ def search(
             )
             results["exact_error"] = "Full-text search is temporarily unavailable."
 
+    results["elapsed_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
     return results
 
 

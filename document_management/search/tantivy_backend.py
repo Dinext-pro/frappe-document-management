@@ -9,6 +9,7 @@ from filelock import FileLock, Timeout
 
 from document_management.search.query import (
     build_natural_query,
+    compile_match_plan,
     fold_text,
     make_excerpt,
     positive_query_text,
@@ -18,6 +19,7 @@ from document_management.search.query import (
 
 
 INDEX_VERSION = 3
+INDEX_PATH_CACHE_KEY = "document_management:tantivy_index_path"
 SEARCH_FIELDS = {
     "doc_name": 6.0,
     "doc_name_normalized": 6.0,
@@ -42,13 +44,35 @@ class IndexBusy(RuntimeError):
 def clear_index_cache():
     _INDEX_CACHE["path"] = None
     _INDEX_CACHE["index"] = None
+    try:
+        frappe.cache().delete_value(INDEX_PATH_CACHE_KEY)
+    except Exception:
+        pass
+
+
+def _configured_index_subpath():
+    use_cache = not getattr(getattr(frappe, "flags", None), "in_test", False)
+    if use_cache:
+        try:
+            cached = frappe.cache().get_value(INDEX_PATH_CACHE_KEY)
+            if isinstance(cached, str) and cached:
+                return cached
+        except Exception:
+            pass
+    settings = frappe.get_single("Document Management Settings")
+    subpath = settings.index_path or "search_index"
+    if use_cache:
+        try:
+            frappe.cache().set_value(INDEX_PATH_CACHE_KEY, subpath, expires_in_sec=300)
+        except Exception:
+            pass
+    return subpath
 
 
 def _root_path():
-    settings = frappe.get_single("Document Management Settings")
     base_path = frappe.utils.get_site_path(
         "private",
-        settings.index_path or "search_index",
+        _configured_index_subpath(),
     )
     return Path(base_path) / f"tantivy_v{INDEX_VERSION}"
 
@@ -278,13 +302,16 @@ def remove_document(doc_type, doc_name):
         raise IndexBusy("The operational search index is rebuilding.") from exc
 
 
-def _search_result(searcher, query, limit, offset=0):
-    return searcher.search(
-        query,
-        limit,
-        count=True,
-        offset=offset,
-    )
+def _search_result(searcher, query, limit, offset=0, count=False):
+    try:
+        return searcher.search(
+            query,
+            limit,
+            count=count,
+            offset=offset,
+        )
+    except TypeError:
+        return searcher.search(query, limit, offset=offset)
 
 
 def _apply_doctype_filter(index, query, doctypes):
@@ -324,7 +351,14 @@ def _get_first_val(doc, field):
     return ""
 
 
-def _build_hit(searcher, query_str, score, doc_address):
+def _build_hit(
+    searcher,
+    query_str,
+    score,
+    doc_address,
+    match_plan=None,
+    include_excerpt=True,
+):
     doc = searcher.doc(doc_address)
     doc_name = _get_first_val(doc, "doc_name")
     title = _get_first_val(doc, "title")
@@ -334,15 +368,28 @@ def _build_hit(searcher, query_str, score, doc_address):
         doc_name=doc_name,
         title=title,
         content=content,
+        plan=match_plan,
     )
-    return {
+    hit = {
         "score": float(score or 0),
         "doc_type": _get_first_val(doc, "doc_type"),
         "doc_name": doc_name,
         "title": title,
-        "excerpt": _excerpt(content, query_str),
+        "excerpt": (
+            make_excerpt(
+                content,
+                query_str,
+                maximum=280,
+                folded_terms=match_plan["folded_terms"] if match_plan else None,
+            )
+            if include_excerpt
+            else ""
+        ),
         **details,
     }
+    if not include_excerpt:
+        hit["_raw_content"] = content
+    return hit
 
 
 def _rank_batch(hits):
@@ -357,13 +404,14 @@ def _rank_batch(hits):
     )
 
 
-def iter_search(query_str, doctypes=None, batch_size=100):
+def iter_search(query_str, doctypes=None, batch_size=100, include_excerpt=True):
     index = get_index()
     index.reload()
     searcher = index.searcher()
     batch_size = max(int(batch_size), 1)
     seen_keys = set()
     yielded_any = False
+    match_plan = compile_match_plan(query_str)
 
     strict_query = build_natural_query(
         index,
@@ -377,14 +425,25 @@ def iter_search(query_str, doctypes=None, batch_size=100):
         result = _search_result(
             searcher,
             strict_query,
-            batch_size,
+            batch_size + 1,
             offset=strict_offset,
+            count=False,
         )
-        if not result.hits:
+        raw_hits = list(result.hits or [])
+        if not raw_hits:
             break
+        has_more_strict = len(raw_hits) > batch_size
+        page_hits = raw_hits[:batch_size]
         batch = []
-        for score, doc_address in result.hits:
-            hit = _build_hit(searcher, query_str, score, doc_address)
+        for score, doc_address in page_hits:
+            hit = _build_hit(
+                searcher,
+                query_str,
+                score,
+                doc_address,
+                match_plan=match_plan,
+                include_excerpt=include_excerpt,
+            )
             key = (hit["doc_type"], hit["doc_name"])
             if key in seen_keys:
                 continue
@@ -393,8 +452,8 @@ def iter_search(query_str, doctypes=None, batch_size=100):
         if batch:
             yielded_any = True
             yield _rank_batch(batch)
-        strict_offset += len(result.hits)
-        if strict_offset >= int(result.count or 0):
+        strict_offset += len(page_hits)
+        if not has_more_strict:
             break
 
     terms = significant_terms(positive_query_text(query_str))
@@ -411,14 +470,25 @@ def iter_search(query_str, doctypes=None, batch_size=100):
             result = _search_result(
                 searcher,
                 relaxed_query,
-                batch_size,
+                batch_size + 1,
                 offset=relaxed_offset,
+                count=False,
             )
-            if not result.hits:
+            raw_hits = list(result.hits or [])
+            if not raw_hits:
                 break
+            has_more_relaxed = len(raw_hits) > batch_size
+            page_hits = raw_hits[:batch_size]
             candidates = []
-            for score, doc_address in result.hits:
-                hit = _build_hit(searcher, query_str, score, doc_address)
+            for score, doc_address in page_hits:
+                hit = _build_hit(
+                    searcher,
+                    query_str,
+                    score,
+                    doc_address,
+                    match_plan=match_plan,
+                    include_excerpt=include_excerpt,
+                )
                 key = (hit["doc_type"], hit["doc_name"])
                 if key in seen_keys:
                     continue
@@ -432,8 +502,8 @@ def iter_search(query_str, doctypes=None, batch_size=100):
             if candidates:
                 yielded_any = True
                 yield _rank_batch(candidates)
-            relaxed_offset += len(result.hits)
-            if relaxed_offset >= int(result.count or 0):
+            relaxed_offset += len(page_hits)
+            if not has_more_relaxed:
                 break
 
     # Typo-tolerant fuzzy fallback only when strict + relaxed produced zero results
@@ -452,10 +522,23 @@ def iter_search(query_str, doctypes=None, batch_size=100):
                 fuzzy=True,
             )
             fuzzy_query = _apply_doctype_filter(index, fuzzy_query, doctypes)
-            result = _search_result(searcher, fuzzy_query, batch_size, offset=0)
+            result = _search_result(
+                searcher,
+                fuzzy_query,
+                batch_size,
+                offset=0,
+                count=False,
+            )
             fuzzy_hits = []
             for score, doc_address in result.hits:
-                hit = _build_hit(searcher, query_str, score, doc_address)
+                hit = _build_hit(
+                    searcher,
+                    query_str,
+                    score,
+                    doc_address,
+                    match_plan=match_plan,
+                    include_excerpt=include_excerpt,
+                )
                 key = (hit["doc_type"], hit["doc_name"])
                 if key in seen_keys:
                     continue

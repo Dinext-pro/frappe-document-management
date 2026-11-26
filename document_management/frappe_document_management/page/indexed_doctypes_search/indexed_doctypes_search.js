@@ -784,23 +784,151 @@ class IndexedDocTypesSearchController {
         return `${route}${sep}${params.toString()}`;
     }
 
-    navigateToRecord(docType, docName, route, childRow) {
+    openChildTableRow(frm, tableFieldname, rowName, idx) {
         const helpers = frappe.document_management && frappe.document_management.helpers;
+        if (helpers && typeof helpers.open_child_table_row === 'function') {
+            return helpers.open_child_table_row(frm, tableFieldname, rowName, idx);
+        }
+        if (!frm || !tableFieldname || !frm.fields_dict || !frm.fields_dict[tableFieldname]) {
+            return false;
+        }
+        const field = frm.fields_dict[tableFieldname];
+        const grid = field && field.grid;
+        if (!grid) return false;
+
+        if (field.section && typeof field.section.is_collapsed === 'function' && field.section.is_collapsed()) {
+            try {
+                field.section.collapse(false);
+            } catch (e) {}
+        }
+        if (typeof frm.scroll_to_field === 'function') {
+            try {
+                frm.scroll_to_field(tableFieldname);
+            } catch (e) {}
+        }
+
+        const numericIdx = parseInt(idx, 10) || 0;
+        const pagination = grid.grid_pagination;
+        if (pagination && numericIdx > 0) {
+            const pageLength = Number(pagination.page_length) || 50;
+            const targetPage = Math.ceil(numericIdx / pageLength);
+            const currentPage = Number(pagination.page_index) || 1;
+            if (targetPage !== currentPage) {
+                if (typeof pagination.go_to_page === 'function') {
+                    pagination.go_to_page(targetPage);
+                } else {
+                    pagination.page_index = targetPage;
+                    if (typeof grid.refresh === 'function') grid.refresh();
+                }
+            }
+        }
+
+        let gridRow = null;
+        if (rowName && typeof grid.get_row === 'function') {
+            try {
+                gridRow = grid.get_row(rowName);
+            } catch (e) {}
+        }
+        if (!gridRow && rowName && grid.grid_rows_by_docname) {
+            gridRow = grid.grid_rows_by_docname[rowName] || null;
+        }
+        if (!gridRow && Array.isArray(grid.grid_rows)) {
+            gridRow = grid.grid_rows.find((row) => (
+                row && row.doc && (
+                    (rowName && String(row.doc.name) === String(rowName))
+                    || (numericIdx > 0 && Number(row.doc.idx) === numericIdx)
+                )
+            )) || null;
+        }
+        if (!gridRow) return false;
+
+        const alreadyOpen = Boolean(
+            (grid.open_grid_row && grid.open_grid_row === gridRow)
+            || (gridRow.wrapper && gridRow.wrapper.hasClass && gridRow.wrapper.hasClass('grid-row-open'))
+        );
+        if (!alreadyOpen) {
+            if (typeof gridRow.toggle_view === 'function') {
+                gridRow.toggle_view(true);
+            } else if (typeof gridRow.show_form === 'function') {
+                gridRow.show_form();
+            } else if (gridRow.open_form_button && typeof gridRow.open_form_button.trigger === 'function') {
+                gridRow.open_form_button.trigger('click');
+            }
+            const nowOpen = Boolean(
+                (grid.open_grid_row && grid.open_grid_row === gridRow)
+                || (gridRow.wrapper && gridRow.wrapper.hasClass && gridRow.wrapper.hasClass('grid-row-open'))
+            );
+            if (!nowOpen && typeof gridRow.show_form === 'function') {
+                gridRow.show_form();
+            }
+        }
+        const rowEl = gridRow.wrapper && (gridRow.wrapper[0] || gridRow.wrapper);
+        if (rowEl && typeof rowEl.scrollIntoView === 'function') {
+            try {
+                rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch (e) {}
+        }
+        return true;
+    }
+
+    focusChildRowOnForm(docType, docName, tableFieldname, rowName, idx, maxAttempts = 45) {
+        if (!tableFieldname) return;
+        const helpers = frappe.document_management && frappe.document_management.helpers;
+        if (helpers && typeof helpers.focus_child_row_on_form === 'function') {
+            helpers.focus_child_row_on_form(docType, docName, tableFieldname, rowName, idx, maxAttempts);
+            return;
+        }
+        let attempts = 0;
+        let openedOnce = false;
+        const resolveFrm = () => (
+            window.cur_frm
+            || (frappe.container && frappe.container.page && frappe.container.page.frm)
+            || null
+        );
+        const recheck = () => {
+            const liveFrm = resolveFrm();
+            if (
+                liveFrm
+                && liveFrm.doc
+                && (!docType || String(liveFrm.doctype) === String(docType))
+                && (!docName || String(liveFrm.docname) === String(docName))
+            ) {
+                this.openChildTableRow(liveFrm, tableFieldname, rowName, idx);
+            }
+        };
+        const tryOpen = () => {
+            attempts += 1;
+            const frm = resolveFrm();
+            const matchesDoc = frm
+                && frm.doc
+                && (!docType || String(frm.doctype) === String(docType))
+                && (!docName || String(frm.docname) === String(docName));
+            if (matchesDoc && this.openChildTableRow(frm, tableFieldname, rowName, idx)) {
+                if (!openedOnce) {
+                    openedOnce = true;
+                    window.setTimeout(recheck, 400);
+                    window.setTimeout(recheck, 950);
+                }
+                return;
+            }
+            if (attempts < maxAttempts) {
+                window.setTimeout(tryOpen, 150);
+            }
+        };
+        window.setTimeout(tryOpen, 150);
+    }
+
+    navigateToRecord(docType, docName, route, childRow) {
         if (typeof frappe.set_route === 'function' && docType && docName) {
-            const nav = frappe.set_route('Form', docType, docName);
-            if (childRow && childRow.table_fieldname && helpers && typeof helpers.focus_child_row_on_form === 'function') {
-                const triggerFocus = () => helpers.focus_child_row_on_form(
+            frappe.set_route('Form', docType, docName);
+            if (childRow && childRow.table_fieldname) {
+                this.focusChildRowOnForm(
                     docType,
                     docName,
                     childRow.table_fieldname,
                     childRow.row_name || '',
                     childRow.idx || 0
                 );
-                if (nav && typeof nav.then === 'function') {
-                    nav.then(triggerFocus);
-                } else {
-                    triggerFocus();
-                }
             }
             return;
         }

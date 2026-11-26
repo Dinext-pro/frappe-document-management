@@ -151,6 +151,15 @@
         }[get_file_type(doc)];
     }
 
+    function is_grid_row_open(grid, gridRow) {
+        if (!gridRow) return false;
+        if (grid && grid.open_grid_row && grid.open_grid_row === gridRow) return true;
+        if (gridRow.wrapper && typeof gridRow.wrapper.hasClass === 'function' && gridRow.wrapper.hasClass('grid-row-open')) {
+            return true;
+        }
+        return Boolean(gridRow.grid_form && gridRow.grid_form.wrapper && gridRow.grid_form.wrapper.is && gridRow.grid_form.wrapper.is(':visible'));
+    }
+
     function open_child_table_row(frm, table_fieldname, row_name, idx) {
         if (!frm || !table_fieldname || !frm.fields_dict || !frm.fields_dict[table_fieldname]) {
             return false;
@@ -159,6 +168,12 @@
         const grid = field && field.grid;
         if (!grid) return false;
 
+        if (field.section && typeof field.section.is_collapsed === 'function' && field.section.is_collapsed()) {
+            try {
+                field.section.collapse(false);
+            } catch (e) {}
+        }
+
         if (typeof frm.scroll_to_field === 'function') {
             try {
                 frm.scroll_to_field(table_fieldname);
@@ -166,27 +181,51 @@
         }
 
         const numericIdx = parseInt(idx, 10) || 0;
-        if (grid.grid_pagination && numericIdx > 0) {
-            const pageLength = Number(grid.grid_pagination.page_length) || 50;
+        const pagination = grid.grid_pagination;
+        if (pagination && numericIdx > 0) {
+            const pageLength = Number(pagination.page_length) || 50;
             const targetPage = Math.ceil(numericIdx / pageLength);
-            if (targetPage > 1 && typeof grid.grid_pagination.go_to_page === 'function') {
-                grid.grid_pagination.go_to_page(targetPage);
+            const currentPage = Number(pagination.page_index) || 1;
+            if (targetPage !== currentPage) {
+                if (typeof pagination.go_to_page === 'function') {
+                    pagination.go_to_page(targetPage);
+                } else {
+                    pagination.page_index = targetPage;
+                    if (typeof grid.refresh === 'function') grid.refresh();
+                }
             }
         }
 
-        let gridRow = (row_name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[row_name]) || null;
+        let gridRow = null;
+        if (row_name && typeof grid.get_row === 'function') {
+            try {
+                gridRow = grid.get_row(row_name);
+            } catch (e) {}
+        }
+        if (!gridRow && row_name && grid.grid_rows_by_docname) {
+            gridRow = grid.grid_rows_by_docname[row_name] || null;
+        }
         if (!gridRow && Array.isArray(grid.grid_rows)) {
             gridRow = grid.grid_rows.find((row) => (
                 row && row.doc && (
-                    (row_name && row.doc.name === row_name)
+                    (row_name && String(row.doc.name) === String(row_name))
                     || (numericIdx > 0 && Number(row.doc.idx) === numericIdx)
                 )
             )) || null;
         }
         if (!gridRow) return false;
 
-        if (typeof gridRow.toggle_view === 'function') {
-            gridRow.toggle_view(true);
+        if (!is_grid_row_open(grid, gridRow)) {
+            if (typeof gridRow.toggle_view === 'function') {
+                gridRow.toggle_view(true);
+            } else if (typeof gridRow.show_form === 'function') {
+                gridRow.show_form();
+            } else if (gridRow.open_form_button && typeof gridRow.open_form_button.trigger === 'function') {
+                gridRow.open_form_button.trigger('click');
+            }
+            if (!is_grid_row_open(grid, gridRow) && typeof gridRow.show_form === 'function') {
+                gridRow.show_form();
+            }
         }
         const rowEl = gridRow.wrapper && (gridRow.wrapper[0] || gridRow.wrapper);
         if (rowEl && typeof rowEl.scrollIntoView === 'function') {
@@ -197,23 +236,46 @@
         return true;
     }
 
-    function focus_child_row_on_form(doc_type, doc_name, table_fieldname, row_name, idx, maxAttempts = 30) {
+    function focus_child_row_on_form(doc_type, doc_name, table_fieldname, row_name, idx, maxAttempts = 45) {
         if (typeof window === 'undefined' || !table_fieldname) return;
         let attempts = 0;
+        let openedOnce = false;
+        const resolveFrm = () => (
+            window.cur_frm
+            || (typeof frappe !== 'undefined' && frappe.container && frappe.container.page && frappe.container.page.frm)
+            || null
+        );
+        const recheck = () => {
+            const liveFrm = resolveFrm();
+            if (
+                liveFrm
+                && liveFrm.doc
+                && (!doc_type || String(liveFrm.doctype) === String(doc_type))
+                && (!doc_name || String(liveFrm.docname) === String(doc_name))
+            ) {
+                open_child_table_row(liveFrm, table_fieldname, row_name, idx);
+            }
+        };
         const tryOpen = () => {
             attempts += 1;
-            const frm = window.cur_frm;
+            const frm = resolveFrm();
             const matchesDoc = frm
-                && (!doc_type || frm.doctype === doc_type)
-                && (!doc_name || frm.docname === doc_name);
+                && frm.doc
+                && (!doc_type || String(frm.doctype) === String(doc_type))
+                && (!doc_name || String(frm.docname) === String(doc_name));
             if (matchesDoc && open_child_table_row(frm, table_fieldname, row_name, idx)) {
+                if (!openedOnce) {
+                    openedOnce = true;
+                    window.setTimeout(recheck, 400);
+                    window.setTimeout(recheck, 950);
+                }
                 return;
             }
             if (attempts < maxAttempts) {
                 window.setTimeout(tryOpen, 150);
             }
         };
-        window.setTimeout(tryOpen, 120);
+        window.setTimeout(tryOpen, 150);
     }
 
     function consume_child_row_url_params() {

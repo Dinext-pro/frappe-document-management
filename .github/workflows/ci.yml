@@ -67,6 +67,7 @@ jobs:
         run: |
           pytest \
             document_management/frappe_document_management/utils/test_improvements.py \
+            document_management/frappe_document_management/utils/test_folder_files.py \
             document_management/frappe_document_management/rag/test_chunking.py \
             document_management/frappe_document_management/rag/test_providers.py \
             document_management/frappe_document_management/utils/test_archive_sanity.py \

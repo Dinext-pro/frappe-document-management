@@ -371,13 +371,20 @@ def check_document_archive():
     _check_file_references(issues, document_names, versions_by_name)
     _check_orphaned_derived_records(issues, document_names, set(versions_by_name))
     _check_physical_orphans(issues)
+    documents_checked = len(documents)
+    versions_checked = len(versions)
+    for check in frappe.get_hooks("document_management_archive_checks", []):
+        external = frappe.get_attr(check)()
+        issues.extend(external["issues"])
+        documents_checked += external["documents_checked"]
+        versions_checked += external["versions_checked"]
     counts = {
         "error": sum(issue["severity"] == "error" for issue in issues),
         "warning": sum(issue["severity"] == "warning" for issue in issues),
     }
     return {
-        "documents_checked": len(documents),
-        "versions_checked": len(versions),
+        "documents_checked": documents_checked,
+        "versions_checked": versions_checked,
         "issues": issues,
         "counts": counts,
         "ok": not issues,

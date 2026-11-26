@@ -664,3 +664,37 @@ def test_live_field_comment_attachment_and_child_permissions(monkeypatch, tmp_pa
     with pytest.raises(indexer.frappe.PermissionError):
         indexer.get_search_result_preview("Task Item", "ROW-1", "VisibleChild")
     assert not rows("VisibleChild")
+
+
+def test_sorted_pages_cover_all_readable_hits_and_break_ties(monkeypatch):
+    from document_management.search import indexer
+
+    rules = {"Task": {}, "Project": {}}
+    monkeypatch.setattr(indexer.frappe.local, "flags", SimpleNamespace(in_test=False), raising=False)
+    monkeypatch.setattr(indexer.frappe, "session", SimpleNamespace(user="reader@example.test"))
+    monkeypatch.setattr(indexer, "_get_indexing_config", lambda **kw: (True, False, set(rules), rules))
+    monkeypatch.setattr(indexer, "_can_offer_doctype", lambda dt: True)
+    # The last candidates in relevance order sort onto the first pages by date and title.
+    hits = [{"doc_type": ["Task", "Project"][n % 2], "doc_name": f"ROW-{(n // 2):04d}",
+             "title": "A" if n >= 500 else "B", "modified": f"2026-11-{1 + (n % 26):02d}",
+             "allowed": n % 73 != 0} for n in range(522)]
+    hits[-1]["modified"] = "2001-01-01"
+    hits[-2]["modified"] = "2030-01-01"
+    monkeypatch.setattr(indexer.tantivy_backend, "iter_search", lambda *a, **kw: (hits[i:i + 41] for i in range(0, len(hits), 41)))
+    allowed = [row for row in hits if row["allowed"]]
+    assert len(allowed) > 500
+    for match_type in ("all_terms", "fuzzy"):
+        monkeypatch.setattr(indexer, "_visible_result", lambda hit, *a: dict(hit, match_type=match_type) if hit["allowed"] else None)
+        for order in ("title_asc", "modified_asc", "modified_desc"):
+            field = "title" if order == "title_asc" else "modified"
+            expected = sorted(allowed, key=lambda row: (row[field], row["doc_type"], row["doc_name"]), reverse=order == "modified_desc")
+            for page in (1, 11):
+                result = indexer.search("record", page=page, page_length=50, sort_by=order)
+                rows = result["exact"]
+                offset = (page - 1) * 50
+                assert [(r["doc_type"], r["doc_name"]) for r in rows] == [
+                    (r["doc_type"], r["doc_name"]) for r in expected[offset:offset + 50]
+                ]
+                assert sum(result["facets"].values()) == len(expected)
+                assert not result["facets_truncated"]
+                assert result["pagination"]["has_more"] == (offset + 50 < len(expected))

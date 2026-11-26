@@ -1,4 +1,5 @@
 import os
+from html import escape
 
 import frappe
 from document_management.frappe_document_management.utils.document_provider import (
@@ -232,15 +233,20 @@ def notify_expiring_documents(days_ahead=None):
             target_date = getdate(raw_target)
             template = overdue if target_date < today_date else upcoming
             doc_title = row.get("title") or doc_name
+            link = None
             if provider := row.get(OWNER_FIELD):
                 handlers = frappe.get_hooks("document_management_reminder_permission", default={}).get(provider, ())
                 if len(handlers) != 1:
                     continue
                 try:
-                    # The provider returns the title its owner can currently read.
-                    doc_title = frappe.get_attr(handlers[0])(doc_name, owner)
-                    if not doc_title:
+                    visible = frappe.get_attr(handlers[0])(doc_name, owner)
+                    if not visible:
                         continue
+                    if isinstance(visible, dict):
+                        doc_title = visible["title"]
+                        link = visible.get("link")
+                    else:
+                        doc_title = visible
                     language = frappe.db.get_value("User", owner, "language")
                     template = frappe._(template, lang=language)
                 except Exception:
@@ -267,6 +273,7 @@ def notify_expiring_documents(days_ahead=None):
                         "document_type": "Document",
                         "document_name": doc_name,
                         "for_user": owner,
+                        **({"link": link} if link else {}),
                     }
                 ).insert(ignore_permissions=True)
                 if send_email:
@@ -276,7 +283,10 @@ def notify_expiring_documents(days_ahead=None):
                             frappe.sendmail(
                                 recipients=[email],
                                 subject=subject,
-                                message=subject,
+                                message=(
+                                    f'<a href="{escape(frappe.utils.get_url(link), quote=True)}">{escape(subject)}</a>'
+                                    if link else subject
+                                ),
                                 reference_doctype="Document",
                                 reference_name=doc_name,
                             )

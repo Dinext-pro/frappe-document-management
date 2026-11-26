@@ -1682,6 +1682,7 @@ class DocumentManagementConsole {
                             {
                                 fieldname: 'max_views',
                                 fieldtype: 'Int',
+                                non_negative: 1,
                                 label: __('Maximum views (0 = unlimited)'),
                                 default: 0
                             },

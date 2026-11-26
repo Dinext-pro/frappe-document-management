@@ -434,9 +434,11 @@ def unlock_shared_document(token, passcode):
 
 def share_controls(max_views=0, passcode=None):
     try:
-        max_views = max(int(max_views or 0), 0)
+        max_views = int(str(max_views if max_views not in (None, "") else 0))
     except (TypeError, ValueError):
         frappe.throw(frappe._("Maximum views must be a number."))
+    if max_views < 0:
+        frappe.throw(frappe._("Maximum views must be zero or a positive integer."))
     passcode_str = (str(passcode).strip() if passcode is not None else "")
     if passcode_str and len(passcode_str) < 4:
         frappe.throw(frappe._("Passcode must be at least 4 characters long."))

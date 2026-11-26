@@ -1,6 +1,8 @@
 import json
 import os
 import time
+from collections import Counter
+from heapq import nlargest, nsmallest
 from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urlsplit
@@ -1092,20 +1094,23 @@ def _visible_result(hit, reader, rules, blocked, matcher, plan, date_from, date_
     }
 
 
-def _sort_records(records, sort_by):
-    if sort_by == "modified_desc":
-        return sorted(records, key=lambda r: r.get("modified") or "", reverse=True)
-    if sort_by == "modified_asc":
-        return sorted(records, key=lambda r: r.get("modified") or "")
-    if sort_by == "title_asc":
-        return sorted(
-            records,
-            key=lambda r: (
-                str(r.get("title") or "").lower(),
-                str(r.get("doc_name") or "").lower(),
-            ),
-        )
-    return records
+def _sort_records(records, sort_by, limit=None):
+    if sort_by == "relevance":
+        return records
+    descending = sort_by == "modified_desc"
+    field = "title" if sort_by == "title_asc" else "modified"
+
+    def key(row):
+        fuzzy = row.get("match_type") == "fuzzy"
+        # Exact results outrank fallback matches in either sort direction.
+        return (not fuzzy if descending else fuzzy, str(row.get(field) or "").casefold(),
+                str(row.get("doc_type") or ""), str(row.get("doc_name") or ""))
+
+    if limit is None:
+        return sorted(records, key=key, reverse=descending)
+    # Inspect the entire authorized stream, retaining only the required prefix.
+    select = nlargest if descending else nsmallest
+    return select(limit, records, key=key)
 
 
 @frappe.whitelist()
@@ -1195,39 +1200,46 @@ def search(
         try:
             target_start = (page - 1) * page_length
             limit_rows = target_start + page_length + 1
-            if sort_by != "relevance":
-                limit_rows = max(limit_rows, 500)
             matcher = TextQuery(query, language=search_language)
             plan = compile_match_plan(query, language=search_language)
-            allowed, fuzzy = [], []
             blocked = _excluded_doctypes()
-            for batch in tantivy_backend.iter_search(
-                matcher.candidate_query, doctypes=sorted(generic_filter), batch_size=max(page_length * 2, 50),
-                include_excerpt=False, include_fuzzy_candidates=True,
-            ):
-                for hit in batch:
-                    if hit["doc_type"] not in generic_filter:
-                        continue
-                    row = _visible_result(hit, frappe.session.user, rules, blocked, matcher, plan, date_from, date_to)
-                    if row is None:
-                        continue
+            facets = {False: Counter(), True: Counter()}
+
+            def readable_results():
+                for batch in tantivy_backend.iter_search(
+                    matcher.candidate_query, doctypes=sorted(generic_filter), batch_size=max(page_length * 2, 50),
+                    include_excerpt=False, include_fuzzy_candidates=True,
+                ):
+                    for hit in batch:
+                        if hit["doc_type"] not in generic_filter:
+                            continue
+                        row = _visible_result(hit, frappe.session.user, rules, blocked, matcher, plan, date_from, date_to)
+                        if row is not None:
+                            facets[row["match_type"] == "fuzzy"][row["doc_type"]] += 1
+                            yield row
+
+            if sort_by == "relevance":
+                exact, fallback = [], []
+                for row in readable_results():
                     if row["match_type"] == "fuzzy":
-                        if len(fuzzy) < limit_rows:
-                            fuzzy.append(row)
-                        continue
-                    allowed.append(row)
-                    if len(allowed) >= limit_rows:
-                        break
-                if len(allowed) >= limit_rows:
-                    break
-            rows = allowed or fuzzy
-            page_rows = _sort_records(rows, sort_by)[target_start:target_start + page_length + 1]
+                        if len(fallback) < limit_rows:
+                            fallback.append(row)
+                    else:
+                        exact.append(row)
+                        if len(exact) == limit_rows:
+                            results["facets_truncated"] = True
+                            break
+                rows = exact or fallback
+            else:
+                rows = _sort_records(readable_results(), sort_by, limit=limit_rows)
+                if facets[False]:
+                    rows = [row for row in rows if row["match_type"] != "fuzzy"]
+
+            fuzzy_fallback = not facets[False] and bool(facets[True])
+            page_rows = rows[target_start:limit_rows]
             results["exact"] = page_rows[:page_length]
-            for row in rows:
-                key = row["doc_type"]
-                results["facets"][key] = results["facets"].get(key, 0) + 1
-            results["facets_truncated"] = len(rows) == limit_rows
-            results["fuzzy_fallback"] = bool(fuzzy and not allowed)
+            results["facets"] = dict(facets[fuzzy_fallback])
+            results["fuzzy_fallback"] = fuzzy_fallback
             results["pagination"].update({
                 "has_more": len(page_rows) > page_length,
                 "from": target_start + 1 if results["exact"] else 0,

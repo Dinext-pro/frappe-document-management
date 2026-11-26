@@ -133,26 +133,31 @@ def decrypt_bytes(data):
 
 def iter_decrypted_chunks(path):
     with open(path, "rb") as handle:
-        magic = handle.read(len(MAGIC))
-        if magic == MAGIC:
-            yield from _decrypt_v2_stream(handle)
-            return
-        if magic == LEGACY_MAGIC:
-            rest = handle.read()
-            try:
-                yield _legacy_cipher().decrypt(rest)
-            except InvalidToken:
-                frappe.throw(
-                    "Document file could not be decrypted. Check the site's encryption_key."
-                )
-            return
-        if magic:
-            yield magic
-        while True:
-            block = handle.read(BLOCK_SIZE)
-            if not block:
-                break
-            yield block
+        yield from iter_decrypted_stream(handle)
+
+
+def iter_decrypted_stream(handle):
+    """Read cleartext from one open file, including across an atomic file replacement."""
+    magic = handle.read(len(MAGIC))
+    if magic == MAGIC:
+        yield from _decrypt_v2_stream(handle)
+        return
+    if magic == LEGACY_MAGIC:
+        rest = handle.read()
+        try:
+            yield _legacy_cipher().decrypt(rest)
+        except InvalidToken:
+            frappe.throw(
+                "Document file could not be decrypted. Check the site's encryption_key."
+            )
+        return
+    if magic:
+        yield magic
+    while True:
+        block = handle.read(BLOCK_SIZE)
+        if not block:
+            break
+        yield block
 
 
 def read_path_bytes(path):
@@ -226,6 +231,8 @@ def encrypt_path_at_rest(path, *, known_plaintext=False):
                 chunk_index += 1
             if written_plain != total_size:
                 frappe.throw("Source file changed while encrypting.")
+            target.flush()
+            os.fsync(target.fileno())
         os.replace(temp_path, path)
         return True
     except Exception:

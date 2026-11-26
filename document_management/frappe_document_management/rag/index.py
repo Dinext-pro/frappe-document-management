@@ -3,6 +3,7 @@ import gc
 import json
 import os
 import shutil
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
@@ -103,6 +104,53 @@ def _chunks_path(root=None):
     return (root or _active_root()) / "chunks.json"
 
 
+def _chunks_db_path(root=None):
+    return (root or _active_root()) / "chunks.sqlite"
+
+
+def _connect_sqlite_ro(db_path):
+    resolved = Path(db_path).resolve()
+    try:
+        return sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return sqlite3.connect(str(resolved))
+
+
+def _init_chunks_db(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            name TEXT PRIMARY KEY,
+            document TEXT NOT NULL,
+            document_version TEXT,
+            version_number TEXT,
+            page_number INTEGER,
+            chunk_index INTEGER,
+            content TEXT NOT NULL,
+            content_hash TEXT,
+            embedding_model TEXT,
+            vector_id INTEGER NOT NULL UNIQUE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document)")
+
+
+def _row_from_sqlite(record):
+    return {
+        "name": record[0],
+        "document": record[1],
+        "document_version": record[2],
+        "version_number": record[3],
+        "page_number": record[4],
+        "chunk_index": record[5],
+        "content": record[6],
+        "content_hash": record[7],
+        "embedding_model": record[8],
+        "vector_id": str(record[9]),
+    }
+
+
 def _read_meta(root=None):
     path = _meta_path(root)
     if not path.exists():
@@ -132,19 +180,147 @@ def _serializable_chunk(row):
 
 
 def _write_chunk_metadata(rows, root):
-    path = _chunks_path(root)
-    path.write_text(
-        json.dumps(
-            [_serializable_chunk(row) for row in rows],
-            ensure_ascii=True,
-        ),
-        encoding="utf-8",
-    )
+    db_path = _chunks_db_path(root)
+    if db_path.exists():
+        db_path.unlink()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        _init_chunks_db(conn)
+        serialized = [_serializable_chunk(row) for row in rows]
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO chunks (
+                name, document, document_version, version_number, page_number,
+                chunk_index, content, content_hash, embedding_model, vector_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    r["name"],
+                    r["document"],
+                    r["document_version"],
+                    r["version_number"],
+                    r["page_number"],
+                    r["chunk_index"],
+                    r["content"],
+                    r["content_hash"],
+                    r["embedding_model"],
+                    int(r["vector_id"]),
+                )
+                for r in serialized
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    legacy_json = _chunks_path(root)
+    if legacy_json.exists():
+        try:
+            legacy_json.unlink()
+        except OSError:
+            pass
+
+
+def _ensure_sqlite_chunk_store(root):
+    db_path = _chunks_db_path(root)
+    if db_path.exists():
+        return db_path
+    legacy_json = _chunks_path(root)
+    if not legacy_json.exists():
+        raise IndexRebuildRequired("The RAG chunk metadata is missing.")
+    rows = json.loads(legacy_json.read_text(encoding="utf-8"))
+    _write_chunk_metadata(rows, root)
+    return db_path
+
+
+def _load_document_chunks_from_store(root, document_names):
+    names = list(dict.fromkeys(document_names or []))
+    if not names:
+        return []
+    db_path = _ensure_sqlite_chunk_store(root)
+    conn = _connect_sqlite_ro(db_path)
+    try:
+        rows = []
+        for start in range(0, len(names), 500):
+            batch = names[start : start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            cursor = conn.execute(
+                f"SELECT name, document, document_version, version_number, page_number, "
+                f"chunk_index, content, content_hash, embedding_model, vector_id "
+                f"FROM chunks WHERE document IN ({placeholders})",
+                batch,
+            )
+            rows.extend(frappe._dict(_row_from_sqlite(rec)) for rec in cursor.fetchall())
+        return rows
+    finally:
+        conn.close()
+
+
+def _mutate_sqlite_chunks(root, remove_documents, new_rows):
+    db_path = _ensure_sqlite_chunk_store(root)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        _init_chunks_db(conn)
+        remove_list = list(dict.fromkeys(remove_documents or []))
+        for start in range(0, len(remove_list), 500):
+            batch = remove_list[start : start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            conn.execute(f"DELETE FROM chunks WHERE document IN ({placeholders})", batch)
+        if new_rows:
+            serialized = [_serializable_chunk(row) for row in new_rows]
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO chunks (
+                    name, document, document_version, version_number, page_number,
+                    chunk_index, content, content_hash, embedding_model, vector_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        r["name"],
+                        r["document"],
+                        r["document_version"],
+                        r["version_number"],
+                        r["page_number"],
+                        r["chunk_index"],
+                        r["content"],
+                        r["content_hash"],
+                        r["embedding_model"],
+                        int(r["vector_id"]),
+                    )
+                    for r in serialized
+                ],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _count_chunk_metadata(root):
+    db_path = _chunks_db_path(root)
+    if db_path.exists():
+        conn = _connect_sqlite_ro(db_path)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
+            return int(row[0] if row else 0)
+        finally:
+            conn.close()
+    return len(_load_chunk_metadata(root))
 
 
 @lru_cache(maxsize=6)
 def _cached_chunk_metadata(path_string):
     path = Path(path_string)
+    if path.suffix == ".sqlite" and path.exists():
+        conn = _connect_sqlite_ro(path)
+        try:
+            cursor = conn.execute(
+                "SELECT name, document, document_version, version_number, page_number, "
+                "chunk_index, content, content_hash, embedding_model, vector_id FROM chunks"
+            )
+            return tuple(_row_from_sqlite(rec) for rec in cursor.fetchall())
+        finally:
+            conn.close()
     if not path.exists():
         raise IndexRebuildRequired("The RAG chunk metadata is missing.")
     rows = json.loads(path.read_text(encoding="utf-8"))
@@ -152,7 +328,157 @@ def _cached_chunk_metadata(path_string):
 
 
 def _load_chunk_metadata(root):
+    db_path = _chunks_db_path(root)
+    if db_path.exists():
+        return list(_cached_chunk_metadata(str(db_path)))
     return list(_cached_chunk_metadata(str(_chunks_path(root))))
+
+
+_DEFAULT_LOAD_CHUNK_METADATA = _load_chunk_metadata
+
+
+@lru_cache(maxsize=6)
+def _cached_chunk_lookups(path_string):
+    rows = _cached_chunk_metadata(path_string)
+    by_id = {int(row["vector_id"]): row for row in rows}
+    by_name = {row["name"]: row for row in rows}
+    return by_id, by_name
+
+
+def _query_chunks_by_vector_ids(root, vector_ids):
+    ids = [int(v) for v in dict.fromkeys(vector_ids or []) if int(v) >= 0]
+    if not ids:
+        return {}
+    db_path = _chunks_db_path(root)
+    if _load_chunk_metadata is _DEFAULT_LOAD_CHUNK_METADATA and db_path.exists():
+        conn = _connect_sqlite_ro(db_path)
+        try:
+            result = {}
+            for start in range(0, len(ids), 500):
+                batch = ids[start : start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(
+                    f"SELECT name, document, document_version, version_number, page_number, "
+                    f"chunk_index, content, content_hash, embedding_model, vector_id "
+                    f"FROM chunks WHERE vector_id IN ({placeholders})",
+                    batch,
+                )
+                for rec in cursor.fetchall():
+                    row = _row_from_sqlite(rec)
+                    result[int(row["vector_id"])] = row
+            return result
+        finally:
+            conn.close()
+    by_id, _ = _load_chunk_lookups(root)
+    return {vid: by_id[vid] for vid in ids if vid in by_id}
+
+
+def _query_chunks_by_names(root, names):
+    unique_names = list(dict.fromkeys(names or []))
+    if not unique_names:
+        return {}
+    db_path = _chunks_db_path(root)
+    if _load_chunk_metadata is _DEFAULT_LOAD_CHUNK_METADATA and db_path.exists():
+        conn = _connect_sqlite_ro(db_path)
+        try:
+            result = {}
+            for start in range(0, len(unique_names), 500):
+                batch = unique_names[start : start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                cursor = conn.execute(
+                    f"SELECT name, document, document_version, version_number, page_number, "
+                    f"chunk_index, content, content_hash, embedding_model, vector_id "
+                    f"FROM chunks WHERE name IN ({placeholders})",
+                    batch,
+                )
+                for rec in cursor.fetchall():
+                    row = _row_from_sqlite(rec)
+                    result[row["name"]] = row
+            return result
+        finally:
+            conn.close()
+    _, by_name = _load_chunk_lookups(root)
+    return {name: by_name[name] for name in unique_names if name in by_name}
+
+
+def _load_chunk_lookups(root):
+    if _load_chunk_metadata is _DEFAULT_LOAD_CHUNK_METADATA:
+        db_path = _chunks_db_path(root)
+        store = db_path if db_path.exists() else _chunks_path(root)
+        return _cached_chunk_lookups(str(store))
+    rows = _load_chunk_metadata(root)
+    return (
+        {int(row["vector_id"]): row for row in rows},
+        {row["name"]: row for row in rows},
+    )
+
+
+def _insert_chunk_rows(rows):
+    if not rows:
+        return
+    clean_rows = []
+    for row in rows:
+        item = dict(row)
+        item.pop("_embedding_text", None)
+        clean_rows.append(item)
+
+    bulk_insert = getattr(frappe.db, "bulk_insert", None)
+    if callable(bulk_insert) and not getattr(getattr(frappe, "flags", None), "in_test", False):
+        fields = [
+            "name",
+            "creation",
+            "modified",
+            "modified_by",
+            "owner",
+            "docstatus",
+            "idx",
+            "document",
+            "document_version",
+            "version_number",
+            "page_number",
+            "chunk_index",
+            "content",
+            "content_hash",
+            "embedding_model",
+            "vector_id",
+        ]
+        now = frappe.utils.now()
+        user = frappe.session.user or "Administrator"
+        values = [
+            (
+                item["name"],
+                now,
+                now,
+                user,
+                user,
+                0,
+                0,
+                item["document"],
+                item.get("document_version"),
+                item.get("version_number"),
+                item.get("page_number"),
+                item.get("chunk_index"),
+                item.get("content") or "",
+                item.get("content_hash"),
+                item.get("embedding_model"),
+                str(item["vector_id"]),
+            )
+            for item in clean_rows
+        ]
+        try:
+            for start in range(0, len(values), 500):
+                bulk_insert(
+                    "Document Chunk",
+                    fields=fields,
+                    values=values[start : start + 500],
+                    ignore_duplicates=True,
+                )
+            return
+        except Exception:
+            pass
+
+    for item in clean_rows:
+        frappe.get_doc(item).insert(ignore_permissions=True)
 
 
 def _expected_meta(dimension=None):
@@ -390,11 +716,49 @@ def _remove_legacy_index_files():
                 pass
 
 
+IMMUTABLE_TANTIVY_SUFFIXES = frozenset(
+    {".store", ".idx", ".pos", ".term", ".fast", ".fieldnorm"}
+)
+
+
+def _copy_or_hardlink_generation_file(src, dst):
+    if Path(src).suffix.lower() in IMMUTABLE_TANTIVY_SUFFIXES:
+        try:
+            os.link(src, dst)
+            return dst
+        except OSError:
+            pass
+    return shutil.copy2(src, dst)
+
+
 def _copy_root_for_mutation():
     root = _active_root()
     temp_root = _generations_path() / f".tmp-{frappe.generate_hash(length=12)}"
-    shutil.copytree(root, temp_root)
+    shutil.copytree(
+        root,
+        temp_root,
+        copy_function=_copy_or_hardlink_generation_file,
+    )
     return temp_root
+
+
+def _iter_sqlite_chunks_batched(db_path, batch_size=500):
+    conn = _connect_sqlite_ro(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT name, document, document_version, version_number, page_number, "
+            "chunk_index, content, content_hash, embedding_model, vector_id FROM chunks"
+        )
+        while True:
+            records = cursor.fetchmany(batch_size)
+            if not records:
+                break
+            yield [
+                {"doctype": "Document Chunk", **_row_from_sqlite(rec)}
+                for rec in records
+            ]
+    finally:
+        conn.close()
 
 
 def rebuild_index():
@@ -402,49 +766,88 @@ def rebuild_index():
     temp_root = _new_temp_generation()
 
     try:
-        documents = frappe.get_all(
+        document_rows = frappe.get_all(
             "Document",
             filters={"is_deleted": 0},
-            pluck="name",
+            fields=["name", "title"],
+            limit_page_length=0,
         )
-        all_rows = []
-        for name in documents:
-            all_rows.extend(build_document_chunks(frappe.get_doc("Document", name)))
-
-        if all_rows:
-            first_vectors = embed_texts(
-                [row["_embedding_text"] for row in all_rows[:128]]
-            )
-            dimension = int(first_vectors.shape[1])
-        else:
-            probe = embed_texts(["dimension probe"])
-            dimension = int(probe.shape[1])
-
-        faiss_index = _new_faiss_index(dimension)
-        if all_rows:
-            for start in range(0, len(all_rows), 128):
-                batch = all_rows[start : start + 128]
-                vectors = (
-                    first_vectors
-                    if start == 0
-                    else embed_texts([row["_embedding_text"] for row in batch])
-                )
-                ids = np.asarray(
-                    [row["vector_id"] for row in batch],
-                    dtype="int64",
-                )
-                faiss_index.add_with_ids(vectors, ids)
-        _save_faiss(faiss_index, temp_root)
+        documents = [row.name for row in document_rows]
+        titles_by_doc = {row.name: row.title or "" for row in document_rows}
 
         text_index = _open_tantivy(temp_root, create=True)
         writer = text_index.writer()
-        for row in all_rows:
-            title = frappe.db.get_value("Document", row["document"], "title") or ""
-            row["name"] = row["content_hash"] + f"-{row['vector_id']}"
-            _add_tantivy_document(writer, row, title)
+        db_path = _chunks_db_path(temp_root)
+        conn = sqlite3.connect(str(db_path))
+        faiss_index = None
+        dimension = None
+        total_chunks = 0
+        pending_batch = []
+
+        def _flush_batch(batch):
+            nonlocal faiss_index, dimension, total_chunks
+            if not batch:
+                return
+            vectors = embed_texts([row.pop("_embedding_text") for row in batch])
+            if faiss_index is None:
+                dimension = int(vectors.shape[1])
+                faiss_index = _new_faiss_index(dimension)
+            ids = np.asarray([row["vector_id"] for row in batch], dtype="int64")
+            faiss_index.add_with_ids(vectors, ids)
+            sqlite_params = []
+            for row in batch:
+                title = titles_by_doc.get(row["document"], "")
+                row["name"] = row["content_hash"] + f"-{row['vector_id']}"
+                _add_tantivy_document(writer, row, title)
+                s = _serializable_chunk(row)
+                sqlite_params.append(
+                    (
+                        s["name"],
+                        s["document"],
+                        s["document_version"],
+                        s["version_number"],
+                        s["page_number"],
+                        s["chunk_index"],
+                        s["content"],
+                        s["content_hash"],
+                        s["embedding_model"],
+                        int(s["vector_id"]),
+                    )
+                )
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO chunks (
+                    name, document, document_version, version_number, page_number,
+                    chunk_index, content, content_hash, embedding_model, vector_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                sqlite_params,
+            )
+            total_chunks += len(batch)
+
+        try:
+            _init_chunks_db(conn)
+            for name in documents:
+                doc_rows = build_document_chunks(frappe.get_doc("Document", name))
+                for row in doc_rows:
+                    pending_batch.append(row)
+                    if len(pending_batch) >= 128:
+                        _flush_batch(pending_batch)
+                        pending_batch = []
+            if pending_batch:
+                _flush_batch(pending_batch)
+                pending_batch = []
+            if faiss_index is None:
+                probe = embed_texts(["dimension probe"])
+                dimension = int(probe.shape[1])
+                faiss_index = _new_faiss_index(dimension)
+            conn.commit()
+        finally:
+            conn.close()
+
+        _save_faiss(faiss_index, temp_root)
         writer.commit()
         _write_meta(_expected_meta(dimension), temp_root)
-        _write_chunk_metadata(all_rows, temp_root)
         del writer, text_index, faiss_index
         gc.collect()
 
@@ -455,9 +858,8 @@ def rebuild_index():
                     "Run the rebuild again."
                 )
             frappe.db.delete("Document Chunk")
-            for row in all_rows:
-                row.pop("_embedding_text", None)
-                frappe.get_doc(row).insert(ignore_permissions=True)
+            for db_batch in _iter_sqlite_chunks_batched(db_path, batch_size=500):
+                _insert_chunk_rows(db_batch)
             active_root = _publish_generation(temp_root)
             _remove_legacy_index_files()
             frappe.db.commit()
@@ -467,7 +869,7 @@ def rebuild_index():
 
     return {
         "documents": len(documents),
-        "chunks": len(all_rows),
+        "chunks": total_chunks,
         "dimension": dimension,
         "generation": active_root.name,
     }
@@ -498,12 +900,7 @@ def index_document(document_name):
             if rows and vectors.shape[1] != faiss_index.d:
                 raise IndexRebuildRequired("Embedding dimension changed. Rebuild the index.")
 
-            metadata_rows = _load_chunk_metadata(temp_root)
-            existing_rows = [
-                frappe._dict(row)
-                for row in metadata_rows
-                if row["document"] == document_name
-            ]
+            existing_rows = _load_document_chunks_from_store(temp_root, [document_name])
             _remove_document_from_indexes(existing_rows, faiss_index, text_index)
             if rows:
                 ids = np.asarray([row["vector_id"] for row in rows], dtype="int64")
@@ -514,19 +911,13 @@ def index_document(document_name):
                     _add_tantivy_document(writer, row, document.title)
                 writer.commit()
                 del writer
-            next_metadata = [
-                row for row in metadata_rows if row["document"] != document_name
-            ]
-            next_metadata.extend(rows)
-            _write_chunk_metadata(next_metadata, temp_root)
+            _mutate_sqlite_chunks(temp_root, [document_name], rows)
             _save_faiss(faiss_index, temp_root)
             del text_index, faiss_index
             gc.collect()
 
             frappe.db.delete("Document Chunk", {"document": document_name})
-            for row in rows:
-                row.pop("_embedding_text", None)
-                frappe.get_doc(row).insert(ignore_permissions=True)
+            _insert_chunk_rows(rows)
             _publish_generation(temp_root)
             frappe.db.commit()
         finally:
@@ -546,21 +937,9 @@ def remove_document(document_name):
         try:
             faiss_index = _load_faiss(temp_root)
             text_index = _open_tantivy(temp_root)
-            metadata_rows = _load_chunk_metadata(temp_root)
-            existing_rows = [
-                frappe._dict(row)
-                for row in metadata_rows
-                if row["document"] == document_name
-            ]
+            existing_rows = _load_document_chunks_from_store(temp_root, [document_name])
             _remove_document_from_indexes(existing_rows, faiss_index, text_index)
-            _write_chunk_metadata(
-                [
-                    row
-                    for row in metadata_rows
-                    if row["document"] != document_name
-                ],
-                temp_root,
-            )
+            _mutate_sqlite_chunks(temp_root, [document_name], [])
             _save_faiss(faiss_index, temp_root)
             del text_index, faiss_index
             gc.collect()
@@ -573,32 +952,126 @@ def remove_document(document_name):
 
 
 def refresh_document_indexes(document_names, remove=False):
+    names = list(dict.fromkeys(document_names or []))
+    if not names:
+        return {"completed": [], "failed": []}
+
+    if remove:
+        try:
+            _active_root()
+        except IndexRebuildRequired:
+            frappe.db.delete("Document Chunk", {"document": ["in", names]})
+            frappe.db.commit()
+            return {"completed": names, "failed": []}
+
+        with FileLock(str(_lock_path())):
+            temp_root = _copy_root_for_mutation()
+            try:
+                faiss_index = _load_faiss(temp_root)
+                text_index = _open_tantivy(temp_root)
+                existing_rows = _load_document_chunks_from_store(temp_root, names)
+                _remove_document_from_indexes(existing_rows, faiss_index, text_index)
+                _mutate_sqlite_chunks(temp_root, names, [])
+                _save_faiss(faiss_index, temp_root)
+                del text_index, faiss_index
+                gc.collect()
+                frappe.db.delete("Document Chunk", {"document": ["in", names]})
+                _publish_generation(temp_root)
+                frappe.db.commit()
+            finally:
+                if temp_root.exists():
+                    shutil.rmtree(temp_root, ignore_errors=True)
+        return {"completed": names, "failed": []}
+
+    # Prepare chunks and embeddings outside the write lock
     completed = []
     failed = []
-    for document_name in list(dict.fromkeys(document_names or [])):
+    prepared = []
+    for document_name in names:
         try:
-            if remove:
-                remove_document(document_name)
-            elif frappe.db.exists(
-                "Document",
-                {"name": document_name, "is_deleted": 0},
-            ):
-                index_document(document_name)
-            completed.append(document_name)
+            if not frappe.db.exists("Document", {"name": document_name, "is_deleted": 0}):
+                completed.append(document_name)
+                continue
+            document = frappe.get_doc("Document", document_name)
+            rows = build_document_chunks(document)
+            vectors = (
+                embed_texts([row["_embedding_text"] for row in rows])
+                if rows
+                else None
+            )
+            prepared.append((document_name, document.title or "", rows, vectors))
         except IndexRebuildRequired as exc:
             failed.append({"document": document_name, "error": str(exc)})
             break
         except Exception:
-            failed.append(
-                {
-                    "document": document_name,
-                    "error": "Index update failed.",
-                }
-            )
+            failed.append({"document": document_name, "error": "Index update failed."})
             frappe.log_error(
                 title="Document RAG Batch Index Error",
                 message=frappe.get_traceback(),
             )
+
+    if not prepared:
+        return {"completed": completed, "failed": failed}
+
+    try:
+        with FileLock(str(_lock_path())):
+            temp_root = _copy_root_for_mutation()
+            try:
+                faiss_index = _load_faiss(temp_root)
+                text_index = _open_tantivy(temp_root)
+                batch_doc_names = {doc_name for doc_name, _, _, _ in prepared}
+                for _, _, rows, vectors in prepared:
+                    if rows and vectors.shape[1] != faiss_index.d:
+                        raise IndexRebuildRequired(
+                            "Embedding dimension changed. Rebuild the index."
+                        )
+
+                existing_rows = _load_document_chunks_from_store(temp_root, list(batch_doc_names))
+                _remove_document_from_indexes(existing_rows, faiss_index, text_index)
+
+                all_new_rows = []
+                writer = text_index.writer()
+                for doc_name, doc_title, rows, vectors in prepared:
+                    if rows:
+                        ids = np.asarray(
+                            [row["vector_id"] for row in rows],
+                            dtype="int64",
+                        )
+                        faiss_index.add_with_ids(vectors, ids)
+                        for row in rows:
+                            row["name"] = row["content_hash"] + f"-{row['vector_id']}"
+                            _add_tantivy_document(writer, row, doc_title)
+                        all_new_rows.extend(rows)
+                writer.commit()
+                del writer
+
+                _mutate_sqlite_chunks(temp_root, list(batch_doc_names), all_new_rows)
+                _save_faiss(faiss_index, temp_root)
+                del text_index, faiss_index
+                gc.collect()
+
+                frappe.db.delete(
+                    "Document Chunk",
+                    {"document": ["in", list(batch_doc_names)]},
+                )
+                _insert_chunk_rows(all_new_rows)
+                _publish_generation(temp_root)
+                frappe.db.commit()
+                completed.extend(doc_name for doc_name, _, _, _ in prepared)
+            finally:
+                if temp_root.exists():
+                    shutil.rmtree(temp_root, ignore_errors=True)
+    except IndexRebuildRequired as exc:
+        for doc_name, _, _, _ in prepared:
+            failed.append({"document": doc_name, "error": str(exc)})
+    except Exception:
+        for doc_name, _, _, _ in prepared:
+            failed.append({"document": doc_name, "error": "Index update failed."})
+        frappe.log_error(
+            title="Document RAG Batch Index Error",
+            message=frappe.get_traceback(),
+        )
+
     return {"completed": completed, "failed": failed}
 
 
@@ -619,23 +1092,25 @@ def _semantic_search(
     wanted = min(max(limit * 4, 20), index.ntotal)
     results = []
     seen = set()
-    metadata_rows = _load_chunk_metadata(root)
-    by_id = {
-        int(row["vector_id"]): frappe._dict(row)
-        for row in metadata_rows
-    }
     while wanted <= index.ntotal:
         scores, ids = index.search(query_vector, wanted)
+        candidate_ids = [
+            int(vector_id)
+            for score, vector_id in zip(scores[0], ids[0])
+            if float(score) >= minimum_score and int(vector_id) >= 0
+        ]
+        by_id = _query_chunks_by_vector_ids(root, candidate_ids)
         for score, vector_id in zip(scores[0], ids[0]):
             if float(score) < minimum_score:
                 continue
-            row = by_id.get(int(vector_id))
+            raw_row = by_id.get(int(vector_id))
             if (
-                not row
-                or row.document not in allowed_documents
-                or row.name in seen
+                not raw_row
+                or raw_row["document"] not in allowed_documents
+                or raw_row["name"] in seen
             ):
                 continue
+            row = frappe._dict(raw_row)
             row.score = float(score)
             seen.add(row.name)
             results.append(row)
@@ -670,15 +1145,12 @@ def _lexical_search(query, allowed_documents, limit, root=None):
         scores[name] = float(score)
         if len(names) >= limit:
             break
-    by_name = {
-        row["name"]: frappe._dict(row)
-        for row in _load_chunk_metadata(root)
-        if row["name"] in scores
-    }
+    by_name = _query_chunks_by_names(root, names)
     ordered = []
     for name in names:
-        row = by_name.get(name)
-        if row:
+        raw_row = by_name.get(name)
+        if raw_row:
+            row = frappe._dict(raw_row)
             row.score = scores[name]
             ordered.append(row)
     return ordered
@@ -794,7 +1266,7 @@ def search_documents(query, allowed_documents, limit=50):
     chunks = search_chunks(
         query,
         allowed_documents,
-        limit=min(max(int(limit), 1), 100),
+        limit=min(max(int(limit), 1), 500),
         max_per_document=1,
         use_reranker=False,
     )
@@ -815,7 +1287,7 @@ def index_status():
     try:
         root = _active_root()
         meta = _read_meta(root)
-        metadata_chunks = len(_load_chunk_metadata(root))
+        metadata_chunks = _count_chunk_metadata(root)
         database_chunks = frappe.db.count("Document Chunk")
         _validate_meta(meta)
         index = _load_faiss(root)

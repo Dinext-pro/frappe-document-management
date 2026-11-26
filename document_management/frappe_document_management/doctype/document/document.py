@@ -31,12 +31,12 @@ class Document(FrappeDocument):
 
     def before_save(self):
         self.sync_current_version()
+        self.validate_version_numbers()
+        self.populate_version_checksums()
+        self.validate_duplicate_files()
         self.force_attachments_private()
         organize_document_files(self)
         self.encrypt_document_files()
-        self.populate_version_checksums()
-        self.validate_version_numbers()
-        self.validate_duplicate_files()
 
     def after_insert(self):
         self.enqueue_processing()
@@ -49,6 +49,8 @@ class Document(FrappeDocument):
     def on_trash(self):
         if frappe.db.exists("DocType", "Document Page"):
             frappe.db.delete("Document Page", {"document": self.name})
+        if frappe.db.exists("DocType", "Document Chunk"):
+            frappe.db.delete("Document Chunk", {"document": self.name})
         if frappe.db.exists("DocType", "Document Share Link"):
             frappe.db.delete("Document Share Link", {"document": self.name})
         publish_document_change(self, deleted=True)
@@ -309,6 +311,7 @@ def _convert_office_version(doc, version):
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            timeout=300,
         )
 
         # LibreOffice may produce a PDF with a slightly different name than
@@ -482,11 +485,15 @@ def convert_office_to_pdf_job(doc_name, version_name):
         "SELECT name FROM `tabDocument Version` WHERE name = %s FOR UPDATE",
         (version_name,),
     )
-    status, preview_attachment = frappe.db.get_value(
+    version_row = frappe.db.get_value(
         "Document Version",
         version_name,
         ["preview_status", "preview_attachment"],
     )
+    if not version_row:
+        frappe.db.commit()
+        return
+    status, preview_attachment = version_row
     if preview_attachment or status == "Processing":
         frappe.db.commit()
         return
@@ -497,26 +504,36 @@ def convert_office_to_pdf_job(doc_name, version_name):
     )
     frappe.db.commit()
 
+    doc = None
     try:
+        if not frappe.db.exists("Document", doc_name):
+            return
         doc = frappe.get_doc("Document", doc_name)
         version = next(
-            row for row in doc.versions if row.name == version_name
+            (row for row in (doc.versions or []) if row.name == version_name),
+            None,
         )
+        if not version:
+            return
         _convert_office_version(doc, version)
         frappe.db.commit()
         doc.reload()
+        publish_document_change(doc)
         doc.enqueue_ocr(enqueue_after_commit=False)
     except Exception:
         error = frappe.get_traceback()
         frappe.log_error(title="Document Preview Conversion Error", message=error)
-        frappe.db.set_value(
-            "Document Version",
-            version_name,
-            {
-                "preview_status": "Failed",
-                "preview_error": error[-2000:],
-            },
-        )
+        if frappe.db.exists("Document Version", version_name):
+            frappe.db.set_value(
+                "Document Version",
+                version_name,
+                {
+                    "preview_status": "Failed",
+                    "preview_error": error[-2000:],
+                },
+            )
+        if doc is not None:
+            publish_document_change(doc)
         frappe.db.commit()
 
 
@@ -531,6 +548,11 @@ def has_permission(doc, ptype="read", user=None):
         return True
 
     user_roles = frappe.get_roles(user)
+
+    if getattr(doc, "is_deleted", 0):
+        if ptype == "share":
+            return False
+        return doc.owner == user or "System Manager" in user_roles
 
     if ptype == "delete":
         return doc.owner == user or "System Manager" in user_roles
@@ -581,7 +603,10 @@ def has_permission(doc, ptype="read", user=None):
 
     # Check Category Level
     if doc.category:
-        category = frappe.get_cached_doc("Document Category", doc.category)
+        try:
+            category = frappe.get_cached_doc("Document Category", doc.category)
+        except frappe.DoesNotExistError:
+            return False
         if category.only_me:
             return category.owner == user
 

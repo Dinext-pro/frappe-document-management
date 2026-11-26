@@ -5,7 +5,15 @@ frappe.pages['indexed-doctypes-search'].on_page_load = function(wrapper) {
         single_column: true
     });
     $(frappe.render_template('indexed_doctypes_search', {})).appendTo(page.main);
-    new IndexedDocTypesSearchController(wrapper, page);
+    wrapper.indexed_search_controller = new IndexedDocTypesSearchController(wrapper, page);
+};
+
+frappe.pages['indexed-doctypes-search'].on_page_hide = function(wrapper) {
+    wrapper.indexed_search_controller?.unbindGlobalShortcuts();
+};
+
+frappe.pages['indexed-doctypes-search'].on_page_show = function(wrapper) {
+    wrapper.indexed_search_controller?.bindGlobalShortcuts();
 };
 
 class IndexedDocTypesSearchController {
@@ -21,7 +29,46 @@ class IndexedDocTypesSearchController {
         this.searchRequest = 0;
         this.bind();
         this.setupActions();
-        this.loadOptions();
+        this.loadOptions().then(() => this.restoreFromUrl());
+    }
+
+    restoreFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const query = (params.get('q') || '').trim();
+        const page = Math.max(parseInt(params.get('page'), 10) || 1, 1);
+        const doctypes = (params.get('doctypes') || '')
+            .split(',')
+            .map((v) => v.trim())
+            .filter(Boolean);
+        if (doctypes.length) {
+            this.selectedTypes = new Set(doctypes);
+            this.renderTypes();
+        }
+        if (query) {
+            this.wrapper.find('#indexed-doctypes-search-input').val(query);
+            this.search(page, false);
+        }
+    }
+
+    syncUrl(query, page) {
+        if (!window.history || !window.history.replaceState) return;
+        const url = new URL(window.location.href);
+        if (query) {
+            url.searchParams.set('q', query);
+        } else {
+            url.searchParams.delete('q');
+        }
+        if (page > 1) {
+            url.searchParams.set('page', String(page));
+        } else {
+            url.searchParams.delete('page');
+        }
+        if (this.selectedTypes.size) {
+            url.searchParams.set('doctypes', Array.from(this.selectedTypes).join(','));
+        } else {
+            url.searchParams.delete('doctypes');
+        }
+        window.history.replaceState({}, '', url.toString());
     }
 
     setupActions() {
@@ -50,6 +97,26 @@ class IndexedDocTypesSearchController {
                 this.search(1);
             }
         });
+        this.bindGlobalShortcuts();
+    }
+
+    unbindGlobalShortcuts() {
+        $(document).off('keydown.indexed_doctypes_search');
+    }
+
+    bindGlobalShortcuts() {
+        $(document).off('keydown.indexed_doctypes_search').on('keydown.indexed_doctypes_search', (event) => {
+            if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+            const tag = (document.activeElement?.tagName || '').toLowerCase();
+            if (['input', 'textarea', 'select'].includes(tag) || document.activeElement?.isContentEditable) {
+                return;
+            }
+            const input = this.wrapper.find('#indexed-doctypes-search-input');
+            if (input.is(':visible')) {
+                event.preventDefault();
+                input.trigger('focus');
+            }
+        });
     }
 
     call(method, args = {}) {
@@ -70,7 +137,11 @@ class IndexedDocTypesSearchController {
         const modes = [];
         if (options.full_text_enabled) modes.push(__('Full text'));
         let status = modes.length
-            ? __('Enabled: {0} ({1} documents indexed)', [modes.join(' + '), options.indexed_count || 0])
+            ? (
+                options.indexed_count != null
+                    ? __('Enabled: {0} ({1} documents indexed)', [modes.join(' + '), options.indexed_count])
+                    : __('Enabled: {0}', [modes.join(' + ')])
+            )
             : __('No search indexes are enabled.');
         if (options.full_text_enabled && !options.generic_index_ready) {
             status += ` | ${__(
@@ -108,12 +179,15 @@ class IndexedDocTypesSearchController {
         all.toggleClass('active', this.selectedTypes.size === 0);
     }
 
-    async search(page = 1) {
+    async search(page = 1, updateUrl = true) {
         const query = this.wrapper.find('#indexed-doctypes-search-input').val().trim();
         if (!query) return;
         const requestId = ++this.searchRequest;
         this.currentPage = Math.max(Number(page) || 1, 1);
         this.currentQuery = query;
+        if (updateUrl) {
+            this.syncUrl(query, this.currentPage);
+        }
         const results = this.wrapper.find('#indexed-doctypes-search-results');
         const status = this.wrapper.find('#indexed-doctypes-search-status');
         const button = this.wrapper.find('#indexed-doctypes-search-button');

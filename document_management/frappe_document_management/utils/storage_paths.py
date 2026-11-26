@@ -74,6 +74,31 @@ def private_file_path(file_url):
     return path
 
 
+def prune_empty_parent_dirs(file_path, root=None):
+    """Remove empty parent directories strictly inside private/files."""
+    if not file_path:
+        return []
+    removed = []
+    try:
+        root_dir = Path(root).resolve() if root else private_files_root()
+        current = Path(file_path).resolve().parent
+    except OSError:
+        return removed
+
+    while current != root_dir:
+        try:
+            current.relative_to(root_dir)
+        except ValueError:
+            break
+        try:
+            current.rmdir()
+            removed.append(current)
+        except OSError:
+            break
+        current = current.parent
+    return removed
+
+
 def _clean_segment(value, fallback):
     value = str(value or "").strip() or fallback
     value = SAFE_SEGMENT_PATTERN.sub("_", value).strip("._-")
@@ -203,6 +228,10 @@ def organize_file_for_document(file_doc, doc):
     new_url = _url_from_path(target_path)
     old_url = file_doc.file_url
     _register_rollback_for_move(source_path, target_path, copied)
+    if not copied:
+        after_commit = getattr(frappe.db, "after_commit", None)
+        if after_commit and hasattr(after_commit, "add"):
+            after_commit.add(lambda p=source_path: prune_empty_parent_dirs(p))
     file_doc.db_set(
         {
             "file_url": new_url,

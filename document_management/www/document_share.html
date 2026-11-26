@@ -1,3 +1,4 @@
+<link rel="stylesheet" href="/assets/document_management/css/pdf_search_viewer.css">
 <style>
     html,
     body {
@@ -79,297 +80,52 @@
         background: #111827;
     }
 
-    .shared-document-viewer .loan-pdf-container {
-        position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-    }
-
-    .shared-document-viewer .loan-pdf-shell {
-        display: flex;
-        width: 100%;
-        height: 100%;
-        min-height: 0;
-        flex-direction: column;
-        overflow: hidden;
-        background: #525659;
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar {
-        display: flex;
-        min-height: 38px;
-        flex-shrink: 0;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-        padding: 5px 8px;
-        background: #323639;
-        color: #ffffff;
-        font-size: 12px;
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar button {
-        display: inline-flex;
-        width: 28px;
-        height: 28px;
-        align-items: center;
-        justify-content: center;
-        border: 0;
-        border-radius: 4px;
-        background: transparent;
-        color: #ffffff;
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar button:hover:not(:disabled) {
-        background: rgba(255, 255, 255, 0.16);
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar button:disabled {
-        opacity: 0.35;
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar-divider {
-        width: 1px;
-        height: 20px;
-        background: rgba(255, 255, 255, 0.25);
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar .loan-pdf-scale {
-        width: 48px;
-        font-size: 11px;
-    }
-
-    .shared-document-viewer .loan-pdf-search {
-        display: flex;
-        min-width: 130px;
-        height: 28px;
-        flex: 1 1 180px;
-        align-items: center;
-        border-radius: 4px;
-        background: rgba(255, 255, 255, 0.12);
-    }
-
-    .shared-document-viewer .loan-pdf-search > i {
-        margin-left: 8px;
-        opacity: 0.7;
-    }
-
-    .shared-document-viewer .loan-pdf-search input {
-        min-width: 0;
-        height: 28px;
-        flex: 1;
-        border: 0;
-        outline: 0;
-        background: transparent;
-        color: #ffffff;
-        font-size: 12px;
-    }
-
-    .shared-document-viewer .loan-pdf-search input::placeholder {
-        color: rgba(255, 255, 255, 0.65);
-    }
-
-    .shared-document-viewer .loan-pdf-search input::-webkit-search-cancel-button {
-        display: none;
-    }
-
-    .shared-document-viewer .loan-pdf-toolbar .loan-pdf-clear {
-        width: 24px;
-        height: 24px;
-    }
-
-    .shared-document-viewer .loan-pdf-match-count {
-        min-width: 42px;
-        text-align: center;
-    }
-
-    .shared-document-viewer .loan-pdf-viewport {
-        position: relative;
-        flex: 1;
-        min-height: 0;
-    }
-
-    .shared-document-viewer .loan-pdf-container {
-        overflow: auto;
-    }
-
-    .shared-document-viewer .loan-pdf-container .pdfViewer {
-        --scale-factor: 1;
-        padding: 10px 0;
-    }
-
-    .shared-document-viewer .loan-pdf-container .pdfViewer .page {
-        --user-unit: 1;
-        --total-scale-factor: calc(var(--scale-factor) * var(--user-unit));
-        --scale-round-x: 1px;
-        --scale-round-y: 1px;
-        position: relative;
-        width: 816px;
-        height: 1056px;
-        margin: 0 auto 10px;
-        overflow: visible;
-        border: 0;
-        background-color: #ffffff;
-        background-clip: content-box;
-    }
-
-    .shared-document-viewer .loan-pdf-container .pdfViewer .canvasWrapper {
-        overflow: hidden;
-        width: 100%;
-        height: 100%;
-    }
-
-    .shared-document-viewer .loan-pdf-container .pdfViewer .canvasWrapper canvas {
-        position: absolute;
-        top: 0;
-        left: 0;
-        display: block;
-        width: 100%;
-        height: 100%;
-        margin: 0;
-        contain: content;
-        object-fit: fill;
-    }
-
-    .shared-document-viewer .loan-pdf-container .loan-pdf-page-fallback {
-        position: absolute;
-        z-index: 1;
-        inset: 0;
-        display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: fill;
-        pointer-events: none;
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer {
-        --min-font-size: 1;
-        --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
-        --min-font-size-inv: calc(1 / var(--min-font-size));
-        position: absolute;
-        z-index: 2;
-        inset: 0;
-        overflow: clip;
-        line-height: 1;
-        text-align: initial;
-        text-size-adjust: none;
-        transform-origin: 0 0;
-        user-select: text;
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer :is(span, br) {
-        position: absolute;
-        color: transparent;
-        white-space: pre;
-        cursor: text;
-        transform-origin: 0 0;
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer > :not(.markedContent),
-    .shared-document-viewer .loan-pdf-container .textLayer .markedContent span:not(.markedContent) {
-        --font-height: 0;
-        --scale-x: 1;
-        --rotate: 0deg;
-        z-index: 1;
-        font-size: calc(var(--text-scale-factor) * var(--font-height));
-        transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer .markedContent {
-        display: contents;
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer .highlight {
-        position: initial;
-        z-index: 0;
-        margin: 0;
-        padding: 0;
-        border-radius: 0;
-        background-color: rgba(255, 221, 64, 0.3);
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer .highlight.selected {
-        background-color: rgba(255, 166, 0, 0.42);
-        box-shadow: inset 0 -1px 0 rgba(173, 92, 0, 0.7);
-    }
-
-    .shared-document-viewer .loan-pdf-container .textLayer ::selection {
-        background: rgba(30, 100, 255, 0.35);
-        color: transparent !important;
-    }
-
-    .shared-document-viewer .loan-pdf-container .annotationLayer {
-        position: absolute;
-        z-index: 3;
-        inset: 0;
-        pointer-events: none;
-    }
-
-    .shared-document-viewer .loan-pdf-container .annotationLayer section {
-        position: absolute;
-        box-sizing: border-box;
-        transform-origin: 0 0;
-        pointer-events: auto;
-    }
-
-    .shared-document-viewer .loan-pdf-container .annotationLayer .linkAnnotation > a {
-        position: absolute;
-        width: 100%;
-        height: 100%;
-    }
-
-    .shared-document-viewer .loan-pdf-container .hiddenCanvasElement {
-        position: absolute;
-        top: 0;
-        left: 0;
-        display: none;
-        width: 0;
-        height: 0;
-    }
-
-    .shared-document-viewer .loan-pdf-error {
-        display: flex;
-        flex: 1;
-        align-items: center;
-        justify-content: center;
-        padding: 20px;
-        background: #ffffff;
-        color: #64748b;
-    }
-
+    /* Fallback icon glyphs when Font Awesome is not loaded on public pages */
     .shared-document-viewer .fa-chevron-left::before {
         content: "<";
+        font-style: normal;
     }
 
     .shared-document-viewer .fa-chevron-right::before {
         content: ">";
+        font-style: normal;
     }
 
     .shared-document-viewer .fa-search-minus::before {
         content: "-";
+        font-style: normal;
     }
 
     .shared-document-viewer .fa-search-plus::before {
         content: "+";
+        font-style: normal;
+    }
+
+    .shared-document-viewer .fa-rotate-right::before {
+        content: "\21BB";
+        font-style: normal;
+        font-size: 14px;
     }
 
     .shared-document-viewer .fa-search::before {
-        content: "Buscar";
+        content: "\1F50D";
         font-style: normal;
         font-size: 11px;
     }
 
     .shared-document-viewer .fa-times::before {
         content: "x";
+        font-style: normal;
     }
 
     .shared-document-viewer .fa-arrow-up::before {
         content: "^";
+        font-style: normal;
     }
 
     .shared-document-viewer .fa-arrow-down::before {
         content: "v";
+        font-style: normal;
     }
 
     .shared-document-image-wrap {
@@ -436,6 +192,7 @@
     id="shared-document-app"
     class="shared-document-shell"
     data-kind="{{ kind | e }}"
+    data-token="{{ token | e }}"
     data-preview-url="{{ preview_url | e }}"
     data-download-url="{{ download_url | e }}"
 >
@@ -446,12 +203,24 @@
         </div>
         {% if show_download_button %}
             <a class="shared-document-download" href="{{ download_url | e }}">
-                Descargar
+                {{ _("Download") }}
             </a>
         {% endif %}
     </div>
     <div class="shared-document-viewer" id="shared-document-viewer">
-        <div class="shared-document-empty">Cargando documento...</div>
+        {% if requires_passcode %}
+        <div class="shared-document-empty">
+            <form id="share-passcode-form" method="post" style="max-width: 340px; width: 100%; text-align: left; background: #1e293b; padding: 24px; border-radius: 12px; border: 1px solid rgba(148, 163, 184, 0.25);">
+                <h3 style="margin: 0 0 8px; color: #f8fafc; font-size: 16px;">{{ _("Passcode Required") }}</h3>
+                <p style="margin: 0 0 14px; color: #cbd5e1; font-size: 13px;">{{ _("Enter the passcode to view this shared document.") }}</p>
+                <p id="share-passcode-error" style="margin: 0 0 12px; color: #fca5a5; font-size: 12px; display: none;">{{ _("Invalid passcode. Please try again.") }}</p>
+                <input id="share-passcode-input" type="password" name="passcode" required autofocus autocomplete="off" placeholder="{{ _('Passcode') }}" style="width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.35); background: #0f172a; color: #f8fafc; margin-bottom: 12px;">
+                <button id="share-passcode-submit" type="submit" class="shared-document-download" style="width: 100%; cursor: pointer;">{{ _("Unlock Document") }}</button>
+            </form>
+        </div>
+        {% else %}
+        <div class="shared-document-empty">{{ _("Loading document...") }}</div>
+        {% endif %}
     </div>
 </div>
 
@@ -460,6 +229,7 @@
         const root = document.getElementById('shared-document-app');
         const viewer = document.getElementById('shared-document-viewer');
         const kind = root.dataset.kind;
+        const shareToken = root.dataset.token || '';
         const previewUrl = root.dataset.previewUrl;
 
         if (typeof window['__'] !== 'function') {
@@ -484,17 +254,32 @@
         }
 
         function sanitizeHtml(html) {
+            if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+                return window.DOMPurify.sanitize(html || '');
+            }
             const documentFragment = new DOMParser().parseFromString(html || '', 'text/html');
-            documentFragment.querySelectorAll('script, iframe, object, embed, style').forEach((node) => node.remove());
+            const blocked = [
+                'script', 'style', 'iframe', 'object', 'embed', 'form', 'input',
+                'button', 'svg', 'math', 'base', 'meta', 'link', 'template'
+            ];
+            documentFragment.querySelectorAll(blocked.join(',')).forEach((node) => node.remove());
             documentFragment.querySelectorAll('*').forEach((node) => {
                 Array.from(node.attributes).forEach((attribute) => {
                     const name = attribute.name.toLowerCase();
-                    const value = attribute.value.trim().toLowerCase();
-                    if (name.startsWith('on')) {
+                    const value = attribute.value.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
+                    if (name.startsWith('on') || name === 'style' || name === 'srcdoc' || name === 'xlink:href') {
                         node.removeAttribute(attribute.name);
+                        return;
                     }
-                    if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) {
-                        node.removeAttribute(attribute.name);
+                    if (name === 'href' || name === 'src' || name === 'action' || name === 'formaction') {
+                        const allowed = value.startsWith('http://')
+                            || value.startsWith('https://')
+                            || value.startsWith('mailto:')
+                            || value.startsWith('#')
+                            || value.startsWith('/');
+                        if (!allowed) {
+                            node.removeAttribute(attribute.name);
+                        }
                     }
                 });
             });
@@ -537,7 +322,7 @@
                     renderPlainText(text);
                 }
             } catch (error) {
-                viewer.innerHTML = '<div class="shared-document-empty">No se pudo cargar la vista previa.</div>';
+                viewer.innerHTML = '<div class="shared-document-empty">' + escapeHtml(__('Could not load preview.')) + '</div>';
                 console.error(error);
             }
         }
@@ -571,18 +356,75 @@
             const loaders = [];
             const viewerVersion = '5.7.284-10';
             if (typeof Vue === 'undefined') {
-                loaders.push(loadScript('https://unpkg.com/vue@3/dist/vue.global.prod.js'));
+                loaders.push(loadScript('/assets/document_management/js/vendor/vue.global.prod.js'));
             }
             if (window.LoanManagerPdfSearchViewer?.version !== viewerVersion) {
                 loaders.push(loadScript('/assets/document_management/js/pdf_search_viewer.v5_7_284_10.js'));
             }
             Promise.all(loaders).then(start).catch((error) => {
-                viewer.innerHTML = '<div class="shared-document-empty">No se pudo cargar el visor PDF.</div>';
+                viewer.innerHTML = '<div class="shared-document-empty">' + escapeHtml(__('Could not load the PDF viewer.')) + '</div>';
                 console.error(error);
             });
         }
 
-        if (kind === 'pdf') {
+        if (kind === 'locked') {
+            const form = document.getElementById('share-passcode-form');
+            const input = document.getElementById('share-passcode-input');
+            const submit = document.getElementById('share-passcode-submit');
+            const errorEl = document.getElementById('share-passcode-error');
+            if (form) {
+                form.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    const passcode = input ? input.value : '';
+                    if (!passcode) return;
+                    if (submit) submit.disabled = true;
+                    if (errorEl) errorEl.style.display = 'none';
+                    try {
+                        const headers = {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'Accept': 'application/json',
+                        };
+                        if (window.frappe && window.frappe.csrf_token) {
+                            headers['X-Frappe-CSRF-Token'] = window.frappe.csrf_token;
+                        }
+                        const body = new URLSearchParams({
+                            token: shareToken,
+                            passcode: passcode,
+                        });
+                        const response = await fetch(
+                            '/api/method/document_management.frappe_document_management.utils.document_sharing.unlock_shared_document',
+                            {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers,
+                                body,
+                            }
+                        );
+                        const data = await response.json().catch(() => ({}));
+                        if (response.ok && data.message && data.message.unlocked) {
+                            window.location.reload();
+                            return;
+                        }
+                        if (errorEl) {
+                            errorEl.textContent = (data._server_messages ? __('Invalid passcode. Please try again.') : (data.message || __('Invalid passcode. Please try again.')));
+                            errorEl.style.display = 'block';
+                        }
+                        if (input) {
+                            input.value = '';
+                            input.focus();
+                        }
+                    } catch (err) {
+                        if (errorEl) {
+                            errorEl.style.display = 'block';
+                        }
+                        console.error(err);
+                    } finally {
+                        if (submit) submit.disabled = false;
+                    }
+                });
+            }
+            return;
+        } else if (kind === 'pdf') {
             renderPdf();
         } else if (kind === 'image') {
             const image = document.createElement('img');
@@ -594,16 +436,17 @@
             viewer.innerHTML = '';
             viewer.appendChild(wrapper);
         } else if (kind === 'markdown') {
-            loadScript('https://cdn.jsdelivr.net/npm/marked/marked.min.js')
-                .catch(() => null)
-                .then(() => renderText(true));
+            Promise.all([
+                loadScript('/assets/document_management/js/vendor/purify.min.js').catch(() => null),
+                loadScript('/assets/document_management/js/vendor/marked.min.js').catch(() => null),
+            ]).then(() => renderText(true));
         } else if (kind === 'text') {
             renderText(false);
         } else {
             viewer.innerHTML = (
                 '<div class="shared-document-empty">' +
-                '<div><h3>Vista previa no disponible</h3>' +
-                '<p>Use el boton Descargar para abrir este archivo.</p></div>' +
+                '<div><h3>' + escapeHtml(__('Preview unavailable')) + '</h3>' +
+                '<p>' + escapeHtml(__('Use the Download button to open this file.')) + '</p></div>' +
                 '</div>'
             );
         }

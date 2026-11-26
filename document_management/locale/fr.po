@@ -2272,3 +2272,213 @@ msgstr "système"
 #: document_management/frappe_document_management/doctype/document_chat_message/document_chat_message.json
 msgid "user"
 msgstr "utilisateur"
+
+msgid "Check System Health"
+msgstr "Vérifier l'état du système"
+
+msgid "Document Management System Health"
+msgstr "État du système de gestion documentaire"
+
+msgid "System Binaries"
+msgstr "Binaires système"
+
+msgid "Search & RAG Indexes"
+msgstr "Index de recherche et RAG"
+
+msgid "Full-text (Tantivy)"
+msgstr "Plein texte (Tantivy)"
+
+msgid "RAG Index"
+msgstr "Index RAG"
+
+msgid "AI Endpoints"
+msgstr "Points de terminaison IA"
+
+msgid "Missing / Error"
+msgstr "Manquant / Erreur"
+
+msgid "Advanced Search Syntax"
+msgstr "Syntaxe de recherche avancée"
+
+msgid "Advanced search syntax"
+msgstr "Syntaxe de recherche avancée"
+
+msgid "Not enough evidence was found in the available documents."
+msgstr "Aucune preuve suffisante n'a été trouvée dans les documents disponibles."
+
+msgid "Document permissions changed while generating the answer. Please ask the question again."
+msgstr "Les autorisations des documents ont changé pendant la génération. Veuillez reposer la question."
+
+msgid "Unable to generate a response. Check the AI provider configuration."
+msgstr "Impossible de générer une réponse. Vérifiez la configuration du fournisseur d'IA."
+
+msgid "Preview unavailable"
+msgstr "Aperçu indisponible"
+
+msgid "Use the Download button to open this file."
+msgstr "Utilisez le bouton Télécharger pour ouvrir ce fichier."
+
+msgid "Could not load preview."
+msgstr "Impossible de charger l'aperçu."
+
+msgid "Could not load the PDF viewer."
+msgstr "Impossible de charger la visionneuse PDF."
+
+msgid "Loading document..."
+msgstr "Chargement du document..."
+
+msgid "Protected Document"
+msgstr "Document protégé"
+
+msgid "Passcode Required"
+msgstr "Code d'accès requis"
+
+msgid "Enter the passcode to view this shared document."
+msgstr "Saisissez le code d'accès pour consulter ce document partagé."
+
+msgid "Invalid passcode. Please try again."
+msgstr "Code d'accès invalide. Veuillez réessayer."
+
+msgid "Passcode"
+msgstr "Code d'accès"
+
+msgid "Unlock Document"
+msgstr "Déverrouiller le document"
+
+msgid "Maximum views (0 = unlimited)"
+msgstr "Vues maximales (0 = illimité)"
+
+msgid "Passcode (optional, min 4 chars)"
+msgstr "Code d'accès (optionnel, min. 4 caractères)"
+
+msgid "Export Markdown"
+msgstr "Exporter en Markdown"
+
+msgid "From Date"
+msgstr "Date de début"
+
+msgid "To Date"
+msgstr "Date de fin"
+
+msgid "Clear Filters"
+msgstr "Effacer les filtres"
+
+msgid "Copy"
+msgstr "Copier"
+
+msgid "Copied to clipboard"
+msgstr "Copié dans le presse-papiers"
+
+msgid "Unable to copy to clipboard."
+msgstr "Impossible de copier dans le presse-papiers."
+
+msgid "Version History"
+msgstr "Historique des versions"
+
+msgid "Quick Edit"
+msgstr "Modification rapide"
+
+msgid "View OCR Text"
+msgstr "Voir le texte OCR"
+
+msgid "No OCR text extracted yet."
+msgstr "Aucun texte OCR extrait pour le moment."
+
+msgid "Rotate clockwise"
+msgstr "Pivoter de 90°"
+
+msgid "Go to page"
+msgstr "Aller à la page"
+
+msgid "Sort: Most recent"
+msgstr "Tri : Plus récents"
+
+msgid "Sort: Oldest"
+msgstr "Tri : Plus anciens"
+
+msgid "Sort: Title A-Z"
+msgstr "Tri : Titre A-Z"
+
+msgid "Sort: Title Z-A"
+msgstr "Tri : Titre Z-A"
+
+msgid "Sort: Code"
+msgstr "Tri : Code"
+
+msgid "Sort: Created"
+msgstr "Tri : Date de création"
+
+msgid "(Optional)"
+msgstr "(Optionnel)"
+
+msgid "Preview version"
+msgstr "Aperçu de la version"
+
+msgid "Sorted by search relevance"
+msgstr "Trié par pertinence de recherche"
+
+msgid "Expiry & Review Reminder Window (Days)"
+msgstr "Délai de rappel d'expiration et de révision (jours)"
+
+msgid "Send Expiry Email Reminders"
+msgstr "Envoyer des rappels d'expiration par e-mail"
+
+msgid "Maintenance"
+msgstr "Maintenance"
+
+msgid "Run Archive Sanity Check"
+msgstr "Lancer le contrôle d'intégrité"
+
+msgid "Checking document archive integrity..."
+msgstr "Vérification de l'intégrité des archives..."
+
+msgid "Archive Sanity Check"
+msgstr "Contrôle d'intégrité des archives"
+
+msgid "Documents checked"
+msgstr "Documents vérifiés"
+
+msgid "Versions checked"
+msgstr "Versions vérifiées"
+
+msgid "Errors"
+msgstr "Erreurs"
+
+msgid "Warnings"
+msgstr "Avertissements"
+
+msgid "Severity"
+msgstr "Gravité"
+
+msgid "Target"
+msgstr "Cible"
+
+msgid "Message"
+msgstr "Message"
+
+msgid "Showing first 100 issues."
+msgstr "Affichage des 100 premiers problèmes."
+
+msgid "No archive integrity issues found."
+msgstr "Aucun problème d'intégrité détecté."
+
+msgid "Encrypt Existing Files"
+msgstr "Chiffrer les fichiers existants"
+
+msgid "Encrypt all unencrypted private Document files in the background using the site encryption key?"
+msgstr "Chiffrer en arrière-plan tous les fichiers privés non chiffrés avec la clé de chiffrement du site ?"
+
+msgid "Background encryption job queued"
+msgstr "Tâche de chiffrement en arrière-plan mise en file"
+
+msgid "Storage & Ingestion"
+msgstr "Stockage et ingestion"
+
+msgid "File Encryption at Rest"
+msgstr "Chiffrement des fichiers au repos"
+
+msgid "Disabled"
+msgstr "Désactivé"
+
+msgid "File (Drag & Drop)"
+msgstr "Fichier (glisser-déposer)"

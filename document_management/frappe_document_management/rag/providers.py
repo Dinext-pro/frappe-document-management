@@ -33,6 +33,19 @@ def _normalize(vectors):
     return array / norms
 
 
+def _is_loopback_endpoint(endpoint):
+    if not endpoint:
+        return False
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").strip().lower()
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def _validated_endpoint(endpoint, allow_internal=False):
     if not endpoint:
         return None
@@ -83,7 +96,10 @@ def embed_texts(texts):
                 config.embedding_endpoint,
                 allow_internal=(
                     config.allow_internal_endpoints
-                    or config.embedding_provider == "LM Studio"
+                    or (
+                        config.embedding_provider == "LM Studio"
+                        and _is_loopback_endpoint(config.embedding_endpoint)
+                    )
                 ),
             ),
             timeout=config.timeout,
@@ -127,9 +143,13 @@ def complete_chat(messages):
 def stream_chat(messages):
     config = get_rag_config()
     if config.chat_provider == "Ollama":
+        raw_endpoint = config.chat_endpoint or "http://localhost:11434"
         endpoint = _validated_endpoint(
-            config.chat_endpoint or "http://localhost:11434",
-            allow_internal=True,
+            raw_endpoint,
+            allow_internal=(
+                config.allow_internal_endpoints
+                or _is_loopback_endpoint(raw_endpoint)
+            ),
         ).rstrip("/")
         response = requests.post(
             f"{endpoint}/api/chat",
@@ -141,6 +161,7 @@ def stream_chat(messages):
             },
             stream=True,
             timeout=config.timeout,
+            allow_redirects=False,
         )
         response.raise_for_status()
         for line in response.iter_lines():
@@ -162,7 +183,10 @@ def stream_chat(messages):
             config.chat_endpoint,
             allow_internal=(
                 config.allow_internal_endpoints
-                or config.chat_provider == "LM Studio"
+                or (
+                    config.chat_provider == "LM Studio"
+                    and _is_loopback_endpoint(config.chat_endpoint)
+                )
             ),
         ),
         timeout=config.timeout,
@@ -173,6 +197,10 @@ def stream_chat(messages):
         stream=True,
     )
     for event in response:
-        content = event.choices[0].delta.content
+        choices = getattr(event, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        content = getattr(delta, "content", None) if delta is not None else None
         if content:
             yield content

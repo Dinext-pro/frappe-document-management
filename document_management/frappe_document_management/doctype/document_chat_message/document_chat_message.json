@@ -25,7 +25,8 @@
    "in_list_view": 1,
    "label": "Session",
    "options": "Document Chat Session",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "role",
@@ -33,7 +34,8 @@
    "in_list_view": 1,
    "label": "Role",
    "options": "user\nassistant\nsystem",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "default": "Completed",
@@ -42,7 +44,8 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "Queued\nProcessing\nCompleted\nFailed\nCancelled",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "content",

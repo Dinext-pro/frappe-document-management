@@ -1,5 +1,4 @@
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -15,9 +14,13 @@ from document_management.frappe_document_management.utils.document_access import
     department_doctype_exists,
 )
 from document_management.frappe_document_management.utils.file_crypto import (
+    decrypted_temp_file,
     encrypt_file_doc,
-    read_file_bytes,
     read_path_bytes,
+    sha256_path,
+)
+from document_management.frappe_document_management.utils.storage_paths import (
+    prune_empty_parent_dirs,
 )
 
 
@@ -39,6 +42,8 @@ PARENT_FIELDS = (
     "party_type",
     "party_name",
     "description",
+    "expiry_date",
+    "review_date",
     "only_me",
 )
 VERSION_FIELDS = (
@@ -66,8 +71,10 @@ TAG_FIELDS = (
 
 
 def _sha256_file(path, block_size=1024 * 1024):
-    data = read_path_bytes(path)
-    return hashlib.sha256(data).hexdigest(), len(data)
+    checksum = sha256_path(path)
+    with decrypted_temp_file(path=path) as readable_path:
+        size = os.path.getsize(readable_path)
+    return checksum, size
 
 
 def _archive_file(zf, document_name, version, kind, file_url, checksum):
@@ -76,11 +83,6 @@ def _archive_file(zf, document_name, version, kind, file_url, checksum):
     path = get_file_path(file_url)
     if not path or not os.path.isfile(path):
         frappe.throw(f"Archive source file is missing: {file_url}")
-    content = read_file_bytes(file_url)
-    actual_checksum = hashlib.sha256(content).hexdigest()
-    size = len(content)
-    if checksum and actual_checksum != checksum:
-        frappe.throw(f"Archive source checksum mismatch: {file_url}")
     filename = os.path.basename(path)
     archive_path = (
         PurePosixPath("documents")
@@ -89,7 +91,12 @@ def _archive_file(zf, document_name, version, kind, file_url, checksum):
         / kind
         / filename
     ).as_posix()
-    zf.writestr(archive_path, content)
+    with decrypted_temp_file(file_url=file_url, path=path) as readable_path:
+        actual_checksum = sha256_path(readable_path)
+        size = os.path.getsize(readable_path)
+        if checksum and actual_checksum != checksum:
+            frappe.throw(f"Archive source checksum mismatch: {file_url}")
+        zf.write(readable_path, archive_path)
     return {
         "path": archive_path,
         "filename": filename,
@@ -163,6 +170,8 @@ def build_document_archive_file(document_names, target_path=None):
             for document_name in names:
                 doc = frappe.get_doc("Document", document_name)
                 doc.check_permission("read")
+                if doc.is_deleted:
+                    frappe.throw("Restore documents before exporting them.")
                 entry = {
                     "source_name": doc.name,
                     "owner": doc.owner,
@@ -189,10 +198,11 @@ def build_document_archive_file(document_names, target_path=None):
                     ),
                     "versions": [],
                 }
-                if doc.category:
+                if doc.category and doc.category not in categories:
                     categories[doc.category] = _category_definition(doc.category)
                 for tag_name in entry["tags"]:
-                    tags[tag_name] = _tag_definition(tag_name)
+                    if tag_name not in tags:
+                        tags[tag_name] = _tag_definition(tag_name)
                 for version in doc.get("versions") or []:
                     version_entry = {
                         field: version.get(field)
@@ -381,24 +391,43 @@ def _restore_dependencies(manifest):
         tag.insert(ignore_permissions=True)
 
 
-def _extract_blob(zf, descriptor, version_name, fieldname):
+def _extract_blob(zf, descriptor, version_name, fieldname, remaining_budget=None):
     if not descriptor:
-        return None, None
+        return None, None, 0
     info = _safe_info(zf, descriptor["path"])
-    if info.file_size != int(descriptor["size"]):
+    expected_size = int(descriptor["size"])
+    if expected_size < 0 or expected_size > MAX_UNCOMPRESSED_SIZE:
+        frappe.throw("Archive file size exceeds maximum allowed limit.")
+    if remaining_budget is not None and expected_size > remaining_budget:
+        frappe.throw("Document archive exceeds maximum uncompressed size.")
+    if info.file_size != expected_size:
         frappe.throw("Archive file size does not match its manifest.")
     extension = os.path.splitext(descriptor["filename"])[1]
     filename = f"archive-{frappe.generate_hash(length=20)}{extension}"
     destination = frappe.get_site_path("private", "files", filename)
     digest = hashlib.sha256()
     size = 0
-    with zf.open(info) as source, open(destination, "xb") as target:
-        while block := source.read(1024 * 1024):
-            digest.update(block)
-            size += len(block)
-            target.write(block)
-    if size != int(descriptor["size"]) or digest.hexdigest() != descriptor["checksum"]:
-        os.remove(destination)
+    max_allowed = min(
+        expected_size,
+        MAX_UNCOMPRESSED_SIZE if remaining_budget is None else remaining_budget,
+    )
+    try:
+        with zf.open(info) as source, open(destination, "xb") as target:
+            while block := source.read(1024 * 1024):
+                size += len(block)
+                if size > max_allowed:
+                    frappe.throw(
+                        "Archive member decompressed size exceeds declared limit."
+                    )
+                digest.update(block)
+                target.write(block)
+    except Exception:
+        if os.path.isfile(destination):
+            os.remove(destination)
+        raise
+    if size != expected_size or digest.hexdigest() != descriptor["checksum"]:
+        if os.path.isfile(destination):
+            os.remove(destination)
         frappe.throw("Archive file checksum does not match its manifest.")
     file_doc = frappe.get_doc(
         {
@@ -418,7 +447,7 @@ def _extract_blob(zf, descriptor, version_name, fieldname):
         if os.path.isfile(destination):
             os.remove(destination)
         raise
-    return file_doc, destination
+    return file_doc, destination, size
 
 
 def _restore_shares(document_name, shares):
@@ -443,8 +472,9 @@ def restore_document_archive(content):
     if len(content) > MAX_ARCHIVE_SIZE:
         frappe.throw("Uploaded document archive is too large.")
     created_documents = []
-    created_files = []
+    created_file_records = {}
     archive_path = None
+    remaining_budget = MAX_UNCOMPRESSED_SIZE
     try:
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as handle:
             handle.write(content)
@@ -513,23 +543,30 @@ def restore_document_archive(content):
                     str(row.version_number): row for row in doc.versions
                 }
 
+                doc_file_names = []
                 for version, original, preview in version_blobs:
-                    original_file, original_path = _extract_blob(
+                    original_file, original_path, orig_bytes = _extract_blob(
                         zf,
                         original,
                         version.name,
                         "attachment",
+                        remaining_budget=remaining_budget,
                     )
-                    created_files.append((original_file.name, original_path))
+                    remaining_budget -= orig_bytes
+                    created_file_records[original_file.name] = original_path
+                    doc_file_names.append(original_file.name)
                     values = {"attachment": original_file.file_url}
                     if preview:
-                        preview_file, preview_path = _extract_blob(
+                        preview_file, preview_path, prev_bytes = _extract_blob(
                             zf,
                             preview,
                             version.name,
                             "preview_attachment",
+                            remaining_budget=remaining_budget,
                         )
-                        created_files.append((preview_file.name, preview_path))
+                        remaining_budget -= prev_bytes
+                        created_file_records[preview_file.name] = preview_path
+                        doc_file_names.append(preview_file.name)
                         values.update(
                             {
                                 "preview_attachment": preview_file.file_url,
@@ -555,6 +592,13 @@ def restore_document_archive(content):
                 _restore_shares(doc.name, entry.get("shares"))
                 doc.reload()
                 doc.save(ignore_permissions=True)
+                # Refresh physical paths after organize_document_files() may have moved them
+                for fname in doc_file_names:
+                    current_url = frappe.db.get_value("File", fname, "file_url")
+                    if current_url:
+                        resolved = get_file_path(current_url)
+                        if resolved:
+                            created_file_records[fname] = resolved
                 frappe.db.set_value(
                     "Document",
                     doc.name,
@@ -568,9 +612,13 @@ def restore_document_archive(content):
         return {"documents": created_documents, "count": len(created_documents)}
     except Exception:
         frappe.db.rollback()
-        for _, path in created_files:
+        for path in created_file_records.values():
             if path and os.path.isfile(path):
-                os.remove(path)
+                try:
+                    os.remove(path)
+                    prune_empty_parent_dirs(path)
+                except OSError:
+                    pass
         raise
     finally:
         if archive_path and os.path.isfile(archive_path):
@@ -601,22 +649,53 @@ def _register_export_file(path, filename):
 
 @frappe.whitelist()
 def export_document_archive(documents):
+    from urllib.parse import quote
+
     if isinstance(documents, str):
         documents = json.loads(documents)
     filename = f"document-archive-{frappe.generate_hash(length=12)}.zip"
     path, manifest = build_document_archive_file(documents)
     file_doc = _register_export_file(path, filename)
+    download_url = (
+        "/api/method/document_management.frappe_document_management.utils."
+        "archive_portability.download_document_archive"
+        f"?file_name={quote(str(file_doc.name))}"
+    )
     return {
+        "file_name": file_doc.name,
         "file_url": file_doc.file_url,
+        "download_url": download_url,
         "documents": len(manifest["documents"]),
     }
 
 
 @frappe.whitelist()
-def import_document_archive():
-    if "System Manager" not in frappe.get_roles():
-        frappe.throw("System Manager role is required.", frappe.PermissionError)
-    content = getattr(frappe.local, "uploaded_file", None)
-    if not content:
-        frappe.throw("A document archive ZIP is required.")
-    return restore_document_archive(content)
+def download_document_archive(file_name):
+    if not file_name:
+        frappe.throw("Archive file name is required.")
+    file_doc = frappe.get_doc("File", file_name)
+    if (
+        file_doc.attached_to_doctype != EXPORT_ATTACHMENT_DOCTYPE
+        or file_doc.attached_to_name != EXPORT_ATTACHMENT_NAME
+    ):
+        frappe.throw(
+            "Requested file is not a document archive export.",
+            frappe.PermissionError,
+        )
+    user = frappe.session.user
+    if (
+        user != "Administrator"
+        and file_doc.owner != user
+        and "System Manager" not in frappe.get_roles(user)
+    ):
+        frappe.throw(
+            "You do not have permission to download this archive.",
+            frappe.PermissionError,
+        )
+    path = get_file_path(file_doc.file_url)
+    if not path or not os.path.isfile(path):
+        frappe.throw("Archive file is no longer available.")
+    frappe.local.response.filecontent = read_path_bytes(path)
+    frappe.local.response.filename = file_doc.file_name or os.path.basename(path)
+    frappe.local.response.type = "download"
+    frappe.local.response.display_content_as = "attachment"

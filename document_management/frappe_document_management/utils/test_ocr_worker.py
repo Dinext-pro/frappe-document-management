@@ -238,7 +238,11 @@ def _make_version(attachment, preview_attachment="", ocr_status="Failed"):
 
 
 def _make_doc(version):
-    return SimpleNamespace(name="DOC-001", get_current_version=lambda: version)
+    return SimpleNamespace(
+        name="DOC-001",
+        get_current_version=lambda: version,
+        check_permission=lambda *args, **kwargs: True,
+    )
 
 
 def test_reprocess_ocr_enqueues_pdf_conversion_when_office_preview_missing():

@@ -5,7 +5,15 @@ frappe.pages['document-chat'].on_page_load = function(wrapper) {
         single_column: true
     });
     $(frappe.render_template('document_chat', {})).appendTo(page.main);
-    new DocumentChatController(wrapper, page);
+    wrapper.document_chat_controller = new DocumentChatController(wrapper, page);
+};
+
+frappe.pages['document-chat'].on_page_hide = function(wrapper) {
+    wrapper.document_chat_controller?.onPageHide();
+};
+
+frappe.pages['document-chat'].on_page_show = function(wrapper) {
+    wrapper.document_chat_controller?.onPageShow();
 };
 
 class DocumentChatController {
@@ -18,6 +26,7 @@ class DocumentChatController {
         this.activeMessage = null;
         this.pollTimer = null;
         this.realtimeEvent = null;
+        this.ensureMarkdownLibs();
         this.bind();
         this.setupAdminActions();
         this.loadSessions();
@@ -28,6 +37,7 @@ class DocumentChatController {
         this.wrapper.find('#btn-send-chat').on('click', () => this.send());
         this.wrapper.find('#btn-cancel-chat').on('click', () => this.cancel());
         this.wrapper.find('#chat-filters').on('click', () => this.editFilters());
+        this.wrapper.find('#export-chat').on('click', () => this.exportSession());
         this.wrapper.find('#rename-chat').on('click', () => this.renameSession());
         this.wrapper.find('#delete-chat').on('click', () => this.deleteSession());
         this.wrapper.find('#chat-input').on('keydown', (event) => {
@@ -216,6 +226,17 @@ class DocumentChatController {
             const retry = $('<button class="btn btn-xs btn-default ml-2"></button>').text(__('Retry'));
             retry.on('click', () => this.retryMessage(message.name));
             statusNode.append(retry);
+        } else if (message.role === 'assistant' && message.status === 'Completed' && message.content) {
+            const copyBtn = $('<button type="button" class="btn btn-xs btn-default"></button>')
+                .html(`<i class="fa fa-clipboard"></i> ${__('Copy')}`)
+                .on('click', () => {
+                    navigator.clipboard?.writeText(message.content || '').then(() => {
+                        frappe.show_alert({message: __('Copied to clipboard'), indicator: 'green'});
+                    }).catch(() => {
+                        frappe.msgprint(__('Unable to copy to clipboard.'));
+                    });
+                });
+            statusNode.append(copyBtn);
         }
         this.renderReferences(node.find('.sources-container'), message.references || []);
         this.scrollBottom();
@@ -233,19 +254,33 @@ class DocumentChatController {
     }
 
     sanitizeHTML(html) {
+        if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+            return window.DOMPurify.sanitize(html || '');
+        }
         const template = document.createElement('template');
-        template.innerHTML = html;
-        const blocked = ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button'];
+        template.innerHTML = html || '';
+        const blocked = [
+            'script', 'style', 'iframe', 'object', 'embed', 'form', 'input',
+            'button', 'svg', 'math', 'base', 'meta', 'link', 'template'
+        ];
         template.content.querySelectorAll(blocked.join(',')).forEach((node) => node.remove());
         template.content.querySelectorAll('*').forEach((node) => {
             Array.from(node.attributes).forEach((attribute) => {
                 const name = attribute.name.toLowerCase();
-                const value = attribute.value.trim().toLowerCase();
-                if (name.startsWith('on') || name === 'style') {
+                const value = attribute.value.replace(/[\u0000-\u001F\u007F\s]+/g, '').toLowerCase();
+                if (name.startsWith('on') || name === 'style' || name === 'srcdoc' || name === 'xlink:href') {
                     node.removeAttribute(attribute.name);
+                    return;
                 }
-                if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) {
-                    node.removeAttribute(attribute.name);
+                if (name === 'href' || name === 'src' || name === 'action' || name === 'formaction') {
+                    const allowed = value.startsWith('http://')
+                        || value.startsWith('https://')
+                        || value.startsWith('mailto:')
+                        || value.startsWith('#')
+                        || value.startsWith('/');
+                    if (!allowed) {
+                        node.removeAttribute(attribute.name);
+                    }
                 }
             });
         });
@@ -352,9 +387,22 @@ class DocumentChatController {
         });
     }
 
+    ensureMarkdownLibs() {
+        const deps = [];
+        if (!window.DOMPurify) {
+            deps.push("/assets/document_management/js/vendor/purify.min.js");
+        }
+        if (!window.marked) {
+            deps.push("/assets/document_management/js/vendor/marked.min.js");
+        }
+        if (deps.length && frappe.require) {
+            frappe.require(deps);
+        }
+    }
+
     loadPdfViewer(callback) {
         if (typeof Vue === 'undefined') {
-            frappe.require("https://unpkg.com/vue@3/dist/vue.global.prod.js", () => {
+            frappe.require("/assets/document_management/js/vendor/vue.global.prod.js", () => {
                 this.loadPdfViewerLibrary(callback);
             });
         } else {
@@ -401,8 +449,7 @@ class DocumentChatController {
                 references: []
             });
             this.watchMessage(result.message);
-            if (this.session.title === __('New conversation') ||
-                this.session.title === 'Nueva conversaciÃ³n') {
+            if (['New conversation', 'Nueva conversación', __('New conversation')].includes(this.session.title)) {
                 this.session.title = query.slice(0, 80);
                 this.wrapper.find('#chat-title').text(this.session.title);
                 const listed = this.sessions.find((row) => row.name === this.session.name);
@@ -410,8 +457,49 @@ class DocumentChatController {
                 this.renderSessions();
             }
         } catch (error) {
+            input.val(query);
             this.setBusy(false);
         }
+    }
+
+    onPageHide() {
+        this.stopPolling();
+        this.unsubscribeRealtime();
+    }
+
+    onPageShow() {
+        if (this.activeMessage) {
+            this.watchMessage(this.activeMessage);
+            this.pollMessage(this.activeMessage);
+        }
+    }
+
+    exportSession() {
+        if (!this.session) return;
+        const lines = [`# ${this.session.title || __('Document Chat')}`, ''];
+        Array.from(this.messages.values()).forEach((msg) => {
+            const label = msg.role === 'user' ? __('User') : __('Assistant');
+            lines.push(`## ${label}`);
+            lines.push('');
+            lines.push(msg.content || '');
+            if (Array.isArray(msg.references) && msg.references.length) {
+                lines.push('');
+                lines.push(`**${__('Sources')}:**`);
+                msg.references.forEach((ref, idx) => {
+                    lines.push(`- [${idx + 1}] ${ref.title || ref.document} (${ref.document}, ${__('Page')} ${ref.page || '-'})`);
+                });
+            }
+            lines.push('');
+        });
+        const blob = new Blob([lines.join('\n')], {type: 'text/markdown;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${(this.session.title || 'chat').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 60)}.md`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     watchMessage(messageName) {
@@ -455,12 +543,21 @@ class DocumentChatController {
     }
 
     async pollMessage(messageName) {
-        if (!this.session) return;
-        const message = await this.call('get_message', {message: messageName});
-        if (!message) return;
-        this.upsertMessage(message);
-        if (!['Queued', 'Processing'].includes(message.status)) {
-            this.finishWatch();
+        if (!this.session || document.hidden) return;
+        try {
+            const message = await this.call('get_message', {message: messageName});
+            if (!message) return;
+            const current = this.messages.get(messageName);
+            const isTerminal = !['Queued', 'Processing'].includes(message.status);
+            if (!isTerminal && current && (current.content || '').length > (message.content || '').length) {
+                return;
+            }
+            this.upsertMessage(message);
+            if (isTerminal) {
+                this.finishWatch();
+            }
+        } catch (error) {
+            console.warn('Chat poll failed:', error);
         }
     }
 
@@ -556,6 +653,8 @@ class DocumentChatController {
             {fieldname: 'category', fieldtype: 'Link', options: 'Document Category', label: __('Category'), default: current.category},
             {fieldname: 'party_type', fieldtype: 'Link', options: 'DocType', label: __('Party Type'), default: current.party_type},
             {fieldname: 'party_name', fieldtype: 'Data', label: __('Party Name'), default: current.party_name},
+            {fieldname: 'date_from', fieldtype: 'Date', label: __('From Date'), default: current.date_from},
+            {fieldname: 'date_to', fieldtype: 'Date', label: __('To Date'), default: current.date_to},
             {
                 fieldname: 'tags',
                 fieldtype: 'Table MultiSelect',
@@ -585,6 +684,16 @@ class DocumentChatController {
             title: __('Document filters'),
             fields,
             primary_action_label: __('Apply'),
+            secondary_action_label: __('Clear Filters'),
+            secondary_action: async () => {
+                const filters = await this.call('update_session_filters', {
+                    session: this.session.name,
+                    filters: JSON.stringify({})
+                });
+                this.session.filters_json = JSON.stringify(filters);
+                this.renderFilters();
+                dialog.hide();
+            },
             primary_action: async (values) => {
                 values.tags = (values.tags || []).map(row => row.tag);
                 values.documents = (values.documents || []).map(row => row.document);

@@ -113,12 +113,12 @@ def get_allowed_documents(filters, user):
     if filters.get("date_from") and filters.get("date_to"):
         db_filters["creation"] = [
             "between",
-            [filters["date_from"], filters["date_to"]],
+            [f'{filters["date_from"]} 00:00:00', f'{filters["date_to"]} 23:59:59'],
         ]
     elif filters.get("date_from"):
-        db_filters["creation"] = [">=", filters["date_from"]]
+        db_filters["creation"] = [">=", f'{filters["date_from"]} 00:00:00']
     elif filters.get("date_to"):
-        db_filters["creation"] = ["<=", filters["date_to"]]
+        db_filters["creation"] = ["<=", f'{filters["date_to"]} 23:59:59']
 
     names = frappe.get_list(
         "Document",
@@ -131,12 +131,32 @@ def get_allowed_documents(filters, user):
     tags = filters.get("tags") or []
     if isinstance(tags, str):
         tags = [tags]
+    tags = list(dict.fromkeys(str(t).strip() for t in tags if str(t).strip()))
     if tags and allowed:
-        tagged = frappe.get_all(
-            "Document Tag Link",
-            filters={"parent": ["in", list(allowed)], "tag": ["in", tags]},
-            pluck="parent",
-        )
+        if len(tags) > 1 and callable(getattr(frappe.db, "sql", None)):
+            tagged = frappe.db.sql(
+                """
+                SELECT parent FROM `tabDocument Tag Link`
+                WHERE parenttype = 'Document'
+                  AND parent IN %(parents)s
+                  AND tag IN %(tags)s
+                GROUP BY parent
+                HAVING COUNT(DISTINCT tag) = %(count)s
+                """,
+                {
+                    "parents": list(allowed),
+                    "tags": tags,
+                    "count": len(tags),
+                },
+                pluck="parent",
+            )
+        else:
+            tagged = frappe.get_all(
+                "Document Tag Link",
+                filters={"parent": ["in", list(allowed)], "tag": ["in", tags]},
+                pluck="parent",
+                limit_page_length=0,
+            )
         allowed.intersection_update(tagged)
     return allowed
 
@@ -364,7 +384,9 @@ def generate_answer(message_name, question, user, question_message=None):
             return
 
         if not safe_chunks:
-            answer = "No encontré evidencia suficiente en los documentos disponibles."
+            answer = frappe._(
+                "Not enough evidence was found in the available documents."
+            )
             references = []
             if not _finish_message(
                 message_name,
@@ -442,9 +464,9 @@ def generate_answer(message_name, question, user, question_message=None):
             )
             return
         if not all(_still_allowed(chunk, user) for chunk in safe_chunks):
-            answer = (
-                "Los permisos de los documentos cambiaron durante la generación. "
-                "Vuelva a realizar la pregunta."
+            answer = frappe._(
+                "Document permissions changed while generating the answer. "
+                "Please ask the question again."
             )
             references = []
         else:
@@ -473,7 +495,9 @@ def generate_answer(message_name, question, user, question_message=None):
         if _is_cancelled(message_name):
             return
         frappe.log_error(title="Document Chat RAG Error", message=frappe.get_traceback())
-        public_error = "No fue posible generar la respuesta. Revise la configuración del proveedor."
+        public_error = frappe._(
+            "Unable to generate a response. Check the AI provider configuration."
+        )
         _fail_message(message_name, public_error)
         _publish(message_name, {"type": "error", "message": public_error}, user)
 

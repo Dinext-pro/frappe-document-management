@@ -1,8 +1,36 @@
 import frappe
 
 
+def _request_cache(attr_name):
+    if getattr(getattr(frappe, "flags", None), "in_test", False):
+        return None
+    local = getattr(frappe, "local", None)
+    if local is None:
+        return None
+    cache = getattr(local, attr_name, None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(local, attr_name, cache)
+    return cache
+
+
+def clear_access_cache():
+    local = getattr(frappe, "local", None)
+    if local is None:
+        return
+    for attr_name in ("_dm_doctype_exists_cache", "_dm_user_departments_cache"):
+        if hasattr(local, attr_name):
+            setattr(local, attr_name, {})
+
+
 def doctype_exists(doctype):
-    return bool(frappe.db.exists("DocType", doctype))
+    cache = _request_cache("_dm_doctype_exists_cache")
+    if cache is not None and doctype in cache:
+        return cache[doctype]
+    exists = bool(frappe.db.exists("DocType", doctype))
+    if cache is not None:
+        cache[doctype] = exists
+    return exists
 
 
 def department_doctype_exists():
@@ -31,15 +59,22 @@ def get_document_access_capabilities():
 def get_user_departments(user):
     if not user or user == "Guest" or not department_access_enabled():
         return set()
-    return {
+    cache = _request_cache("_dm_user_departments_cache")
+    if cache is not None and user in cache:
+        return set(cache[user])
+    departments = {
         department
         for department in frappe.get_all(
             "Employee",
             filters={"user_id": user, "status": "Active"},
             pluck="department",
+            limit_page_length=0,
         )
         if department
     }
+    if cache is not None:
+        cache[user] = frozenset(departments)
+    return departments
 
 
 def matches_access_rules(doc, user_roles, user_departments):

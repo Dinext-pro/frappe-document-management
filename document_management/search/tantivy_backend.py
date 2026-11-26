@@ -12,6 +12,7 @@ from document_management.search.query import (
     fold_text,
     make_excerpt,
     search_match_details,
+    significant_terms,
 )
 
 
@@ -305,6 +306,9 @@ def iter_search(query_str, doctypes=None, batch_size=100):
         strict_offset += len(result.hits)
         if strict_offset >= int(result.count or 0):
             break
+
+    if len(significant_terms(query_str)) <= 1:
+        return
 
     relaxed_query = build_natural_query(
         index,

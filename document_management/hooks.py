@@ -7,7 +7,14 @@ app_license = "mit"
 
 # The app's console, PDF viewer, chat, and document forms still use Font
 # Awesome 4 icons. Frappe v16 ships the font but no longer loads it in Desk.
-app_include_css = ["/assets/frappe/css/fonts/fontawesome/font-awesome.min.css"]
+app_include_css = [
+    "/assets/frappe/css/fonts/fontawesome/font-awesome.min.css",
+    "/assets/document_management/css/pdf_search_viewer.css",
+]
+app_include_js = [
+    "/assets/document_management/js/document_upload.js",
+    "/assets/document_management/js/console_helpers.js",
+]
 
 add_to_apps_screen = [
     {
@@ -54,7 +61,8 @@ scheduler_events = {
     ],
     "daily": [
         "document_management.frappe_document_management.utils.ml_tagger.train_tagger_model",
-        "document_management.frappe_document_management.utils.archive_lifecycle.purge_expired_trash"
+        "document_management.frappe_document_management.utils.archive_lifecycle.purge_expired_trash",
+        "document_management.frappe_document_management.utils.archive_lifecycle.notify_expiring_documents"
     ],
     "weekly": [
         "document_management.frappe_document_management.utils.archive_sanity.scheduled_archive_sanity_check"

@@ -29,7 +29,7 @@ def create_session(filters=None):
     session = frappe.get_doc(
         {
             "doctype": "Document Chat Session",
-            "title": "Nueva conversación",
+            "title": frappe._("New conversation"),
             "user": frappe.session.user,
             "status": "Active",
             "filters_json": json.dumps(parsed_filters, ensure_ascii=True),
@@ -146,7 +146,7 @@ def ask_question(session, query):
         }
     ).insert(ignore_permissions=True)
 
-    if session_doc.title == "Nueva conversación":
+    if session_doc.title in {"New conversation", "Nueva conversación", frappe._("New conversation")}:
         session_doc.db_set("title", query[:80], update_modified=False)
     session_doc.db_set("last_message_at", now_datetime(), update_modified=False)
 
@@ -317,6 +317,8 @@ def get_latest_rag_evaluation():
 def get_document_pdf_url(document):
     doc = frappe.get_doc("Document", document)
     doc.check_permission("read")
+    if doc.is_deleted:
+        frappe.throw("Document is in trash.", frappe.PermissionError)
     latest_version = doc.get_current_version()
     if latest_version:
         file_url = latest_version.preview_attachment or latest_version.attachment

@@ -16,6 +16,9 @@ from document_management.frappe_document_management.utils.file_crypto import (
     decrypted_temp_file,
     encrypt_file_doc,
 )
+from document_management.frappe_document_management.utils.realtime import (
+    publish_document_change,
+)
 from document_management.frappe_document_management.utils.storage_paths import (
     organize_file_for_version,
 )
@@ -111,7 +114,8 @@ def extract_pages_with_openai(file_path, ext, page_numbers=None):
 
     wanted_pages = set(page_numbers or [])
     try:
-        client = OpenAI(api_key=api_key)
+        timeout = max(int(settings.get("rag_timeout") or 120), 10)
+        client = OpenAI(api_key=api_key, timeout=timeout)
         model = settings.openai_ocr_model or "gpt-5-mini"
         if ext in IMAGE_EXTENSIONS:
             with open(file_path, "rb") as image_file:
@@ -308,40 +312,60 @@ def recover_stale_ocr_jobs():
     for row in processing_versions:
         if not is_ocr_processing_stale(row):
             continue
-        frappe.db.sql(
-            "SELECT name FROM `tabDocument Version` WHERE name = %s FOR UPDATE",
-            (row.name,),
-        )
-        current = frappe.db.get_value(
-            "Document Version",
-            row.name,
-            [
-                "name",
-                "parent",
-                "ocr_status",
-                "ocr_started_at",
-                "ocr_heartbeat_at",
-            ],
-            as_dict=True,
-        )
-        if not current or not is_ocr_processing_stale(current):
+        try:
+            frappe.db.sql(
+                "SELECT name FROM `tabDocument Version` WHERE name = %s FOR UPDATE",
+                (row.name,),
+            )
+            current = frappe.db.get_value(
+                "Document Version",
+                row.name,
+                [
+                    "name",
+                    "parent",
+                    "ocr_status",
+                    "ocr_started_at",
+                    "ocr_heartbeat_at",
+                ],
+                as_dict=True,
+            )
+            if not current or not is_ocr_processing_stale(current):
+                frappe.db.commit()
+                continue
+            if not frappe.db.exists("Document", row.parent):
+                frappe.db.set_value(
+                    "Document Version",
+                    row.name,
+                    {
+                        "ocr_status": "Failed",
+                        "ocr_started_at": None,
+                        "ocr_heartbeat_at": None,
+                        "ocr_lease_token": None,
+                    },
+                )
+                frappe.db.commit()
+                continue
+            frappe.db.set_value(
+                "Document Version",
+                row.name,
+                {
+                    "ocr_status": "Pending",
+                    "ocr_started_at": None,
+                    "ocr_heartbeat_at": None,
+                    "ocr_lease_token": None,
+                },
+            )
+            frappe.db.set_value("Document", row.parent, "ocr_status", "Pending")
             frappe.db.commit()
-            continue
-        frappe.db.set_value(
-            "Document Version",
-            row.name,
-            {
-                "ocr_status": "Pending",
-                "ocr_started_at": None,
-                "ocr_heartbeat_at": None,
-                "ocr_lease_token": None,
-            },
-        )
-        frappe.db.set_value("Document", row.parent, "ocr_status", "Pending")
-        frappe.db.commit()
-        doc = frappe.get_doc("Document", row.parent)
-        doc.enqueue_processing()
-        recovered.append(row.parent)
+            doc = frappe.get_doc("Document", row.parent)
+            doc.enqueue_processing()
+            recovered.append(row.parent)
+        except Exception:
+            frappe.db.rollback()
+            frappe.log_error(
+                title="Stale OCR Recovery Error",
+                message=frappe.get_traceback(),
+            )
     return recovered
 
 
@@ -434,34 +458,30 @@ def _replace_document_pages(doc, version, pages, extraction_method):
 
 
 def _save_ocr_preview(version, source_url, pdf_path):
-    from frappe.core.doctype.file.file import File
-    from frappe.utils import file_manager as frappe_file_manager
-    from frappe.utils.file_manager import save_file
-
     with open(pdf_path, "rb") as file_handle:
         content = file_handle.read()
 
-    original_check = getattr(frappe_file_manager, "check_max_file_size", None)
-    original_file_check = getattr(File, "check_max_file_size", None)
-    frappe_file_manager.check_max_file_size = lambda value: len(value)
+    stem = os.path.splitext(os.path.basename(pdf_path))[0][:80] or "ocr"
+    unique_filename = f"{stem}-{frappe.generate_hash(length=10)}.pdf"
+    private_dir = frappe.get_site_path("private", "files")
+    os.makedirs(private_dir, exist_ok=True)
+    destination = os.path.join(private_dir, unique_filename)
+    with open(destination, "xb") as out_handle:
+        out_handle.write(content)
 
-    def file_check(instance):
-        return len(
-            getattr(instance, "_content", None)
-            or getattr(instance, "content", None)
-            or b""
-        )
-
-    File.check_max_file_size = file_check
     try:
-        saved_file = save_file(
-            os.path.basename(pdf_path),
-            content,
-            "Document Version",
-            version.name,
-            is_private=1 if source_url.startswith("/private") else 0,
-            df="preview_attachment",
+        saved_file = frappe.get_doc(
+            {
+                "doctype": "File",
+                "file_name": unique_filename,
+                "file_url": f"/private/files/{unique_filename}",
+                "attached_to_doctype": "Document Version",
+                "attached_to_name": version.name,
+                "attached_to_field": "preview_attachment",
+                "is_private": 1,
+            }
         )
+        saved_file.insert(ignore_permissions=True)
         if version.parent:
             doc = frappe.get_doc("Document", version.parent)
             saved_file = organize_file_for_version(
@@ -471,15 +491,10 @@ def _save_ocr_preview(version, source_url, pdf_path):
                 "preview_attachment",
             )
         encrypt_file_doc(saved_file)
-    finally:
-        if original_check is None:
-            delattr(frappe_file_manager, "check_max_file_size")
-        else:
-            frappe_file_manager.check_max_file_size = original_check
-        if original_file_check is None:
-            delattr(File, "check_max_file_size")
-        else:
-            File.check_max_file_size = original_file_check
+    except Exception:
+        if os.path.isfile(destination):
+            os.remove(destination)
+        raise
 
     previous_url = version.preview_attachment or ""
     frappe.db.set_value(
@@ -554,7 +569,11 @@ def _run_local_ocr(
     temp_dir,
     config,
     timeout_seconds=3570,
+    heartbeat_callback=None,
+    heartbeat_interval=60,
 ):
+    import time
+
     base_name = os.path.splitext(os.path.basename(source_path))[0]
     output_pdf = os.path.join(temp_dir, f"{base_name}_ocr.pdf")
     sidecar = os.path.join(temp_dir, f"{base_name}_ocr.txt")
@@ -579,14 +598,52 @@ def _run_local_ocr(
         command.append("--skip-text")
     command.extend([source_path, output_pdf])
 
-    result = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout_seconds,
-    )
+    if heartbeat_callback is None:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    else:
+        deadline = time.monotonic() + max(float(timeout_seconds), 1.0)
+        step = max(float(heartbeat_interval or 60), 5.0)
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise subprocess.TimeoutExpired(
+                        command,
+                        timeout_seconds,
+                        output=stdout,
+                        stderr=stderr,
+                    )
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(step, remaining))
+                    result = subprocess.CompletedProcess(
+                        command,
+                        proc.returncode,
+                        stdout,
+                        stderr,
+                    )
+                    break
+                except subprocess.TimeoutExpired:
+                    heartbeat_callback()
+        except Exception:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+            raise
     pages = []
     if os.path.exists(output_pdf):
         pages = _extract_pdf_pages(output_pdf)
@@ -624,6 +681,7 @@ def process_ocr(doc_name):
     source_context = None
     replaced_preview = ("", "")
     lease_token = None
+    lease_released = False
     try:
         doc = frappe.get_doc("Document", doc_name)
         version = _current_version(doc)
@@ -662,7 +720,9 @@ def process_ocr(doc_name):
                 text_content,
                 lease_token=lease_token,
             )
+            lease_released = True
             _apply_tags(doc, text_content)
+            publish_document_change(doc)
             frappe.db.commit()
             
             frappe.enqueue(
@@ -705,6 +765,10 @@ def process_ocr(doc_name):
                 timeout_seconds=max(
                     (_ocr_timeout_minutes() * 60) - 30,
                     60,
+                ),
+                heartbeat_callback=lambda: _heartbeat_ocr_lease(
+                    version.name,
+                    lease_token,
                 ),
             )
             _heartbeat_ocr_lease(version.name, lease_token)
@@ -777,7 +841,9 @@ def process_ocr(doc_name):
             extracted_text,
             lease_token=lease_token,
         )
+        lease_released = True
         _apply_tags(doc, extracted_text)
+        publish_document_change(doc)
         frappe.db.commit()
         _delete_replaced_preview(version.name, *replaced_preview)
 
@@ -803,6 +869,7 @@ def process_ocr(doc_name):
                 and "version" in locals()
                 and version
                 and lease_token
+                and not lease_released
             ):
                 frappe.db.rollback()
                 _set_ocr_state(
@@ -811,6 +878,7 @@ def process_ocr(doc_name):
                     "Failed",
                     lease_token=lease_token,
                 )
+                publish_document_change(doc)
                 frappe.db.commit()
         except OCRLeaseLost:
             frappe.db.rollback()

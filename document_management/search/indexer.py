@@ -33,12 +33,24 @@ SEARCHABLE_FIELD_TYPES = {
 
 
 class _TextExtractor(HTMLParser):
+    BLOCK_TAGS = frozenset(
+        {"p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"}
+    )
+
     def __init__(self):
         super().__init__()
         self.parts = []
 
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self.BLOCK_TAGS:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag.lower() in self.BLOCK_TAGS:
+            self.parts.append(" ")
+
     def handle_data(self, data):
-        if data.strip():
+        if data:
             self.parts.append(data)
 
 
@@ -49,7 +61,7 @@ def _plain_text(value, fieldtype=None):
         try:
             parser.feed(text)
             parser.close()
-            text = " ".join(parser.parts)
+            text = "".join(parser.parts)
         except Exception:
             pass
     return " ".join(unescape(text).split())
@@ -173,34 +185,104 @@ def _enqueue_indexing(doc_type, doc_name, queue="short", timeout=300):
     )
 
 
-def handle_doc_save(doc, method=None):
+INDEXING_CONFIG_CACHE_KEY = "document_management:indexing_config"
+SKIPPED_INDEX_DOCTYPES = frozenset(
+    {
+        "Access Log",
+        "Activity Log",
+        "Document Chat Message",
+        "Document Chat Session",
+        "Document Chunk",
+        "Document Page",
+        "Document Saved View",
+        "Document Share Link",
+        "Email Queue",
+        "Error Log",
+        "Notification Log",
+        "RQ Job",
+        "Route History",
+        "Scheduled Job Log",
+        "Session",
+        "Token Cache",
+        "Version",
+        "View Log",
+    }
+)
+
+
+def clear_indexing_config_cache():
     try:
-        settings = frappe.get_single('Document Management Settings')
+        frappe.cache().delete_value(INDEXING_CONFIG_CACHE_KEY)
+    except Exception:
+        pass
+
+
+def _get_indexing_config():
+    use_cache = not getattr(getattr(frappe, "flags", None), "in_test", False)
+    if use_cache:
+        try:
+            cached = frappe.cache().get_value(INDEXING_CONFIG_CACHE_KEY)
+            if isinstance(cached, dict) and "indexed_doctypes" in cached:
+                return (
+                    bool(cached.get("enable_full_text_search")),
+                    bool(cached.get("enable_semantic_search")),
+                    set(cached.get("indexed_doctypes") or ()),
+                )
+        except Exception:
+            pass
+
+    settings = frappe.get_single("Document Management Settings")
+    full_text = bool(getattr(settings, "enable_full_text_search", False))
+    semantic = bool(getattr(settings, "enable_semantic_search", False))
+    indexed = {
+        d.document_type
+        for d in (settings.get("indexed_doctypes", []) or [])
+        if getattr(d, "document_type", None)
+    }
+    if use_cache:
+        try:
+            frappe.cache().set_value(
+                INDEXING_CONFIG_CACHE_KEY,
+                {
+                    "enable_full_text_search": full_text,
+                    "enable_semantic_search": semantic,
+                    "indexed_doctypes": sorted(indexed),
+                },
+                expires_in_sec=300,
+            )
+        except Exception:
+            pass
+    return full_text, semantic, indexed
+
+
+def handle_doc_save(doc, method=None):
+    if doc.doctype in SKIPPED_INDEX_DOCTYPES:
+        return
+    try:
+        enable_full_text, enable_semantic, indexed_doctypes = _get_indexing_config()
     except Exception:
         return
-        
-    indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
+
     comment_reference = _comment_reference(doc)
     if comment_reference:
         doc_type, doc_name = comment_reference
-        if settings.enable_full_text_search and doc_type in indexed_doctypes:
+        if enable_full_text and doc_type in indexed_doctypes:
             _enqueue_indexing(doc_type, doc_name)
         return
 
     should_index_generic = (
-        settings.enable_full_text_search
+        enable_full_text
         and doc.doctype != "Document"
         and doc.doctype in indexed_doctypes
     )
     should_index_rag = (
         doc.doctype == "Document"
-        and settings.enable_semantic_search
-        and not doc.get("is_deleted")
+        and enable_semantic
     )
     if not should_index_generic and not should_index_rag:
         return
-        
-    # Enqueue the heavy embedding process so it doesn't block the UI
+
+    # Enqueue the heavy embedding process (or soft-delete removal) so it doesn't block the UI
     _enqueue_indexing(doc.doctype, doc.name)
 
 def run_indexing_background(doc_type, doc_name):
@@ -245,17 +327,18 @@ def run_indexing_background(doc_type, doc_name):
             frappe.log_error(title="Semantic Indexing Error", message=str(e))
 
 def handle_doc_trash(doc, method=None):
+    if doc.doctype in SKIPPED_INDEX_DOCTYPES:
+        return
     try:
-        settings = frappe.get_single('Document Management Settings')
-        indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
+        enable_full_text, enable_semantic, indexed_doctypes = _get_indexing_config()
         comment_reference = _comment_reference(doc)
         if comment_reference:
             doc_type, doc_name = comment_reference
-            if settings.enable_full_text_search and doc_type in indexed_doctypes:
+            if enable_full_text and doc_type in indexed_doctypes:
                 _enqueue_indexing(doc_type, doc_name)
             return
         if (
-            settings.enable_full_text_search
+            enable_full_text
             and doc.doctype != "Document"
             and doc.doctype in indexed_doctypes
         ):
@@ -267,8 +350,15 @@ def handle_doc_trash(doc, method=None):
                 timeout=300,
                 enqueue_after_commit=True,
             )
-        if settings.enable_semantic_search and doc.doctype == "Document":
-            semantic_backend.remove_document(doc.doctype, doc.name)
+        if enable_semantic and doc.doctype == "Document":
+            frappe.enqueue(
+                "document_management.search.indexer.remove_from_rag_background",
+                doc_type=doc.doctype,
+                doc_name=doc.name,
+                queue="long",
+                timeout=600,
+                enqueue_after_commit=True,
+            )
             
     except Exception:
         pass
@@ -287,6 +377,16 @@ def remove_from_index_background(doc_type, doc_name):
         )
     except tantivy_backend.IndexRebuildRequired:
         return
+
+
+def remove_from_rag_background(doc_type, doc_name):
+    try:
+        semantic_backend.remove_document(doc_type, doc_name)
+    except Exception:
+        frappe.log_error(
+            title="Semantic Index Removal Error",
+            message=frappe.get_traceback(),
+        )
 
 
 def _parse_doctypes(doctypes):
@@ -474,8 +574,9 @@ def get_search_options():
             continue
     options = list(options_dict.values())
 
-    indexed_count = 0
-    if settings.enable_full_text_search and tantivy_backend.index_exists():
+    is_manager = "System Manager" in (frappe.get_roles() or [])
+    indexed_count = 0 if is_manager else None
+    if is_manager and settings.enable_full_text_search and tantivy_backend.index_exists():
         try:
             index = tantivy_backend.get_index()
             searcher = index.searcher()
@@ -494,7 +595,7 @@ def get_search_options():
 
 @frappe.whitelist()
 def enqueue_rebuild_index():
-    frappe.has_permission("Document Management Settings", throw=True)
+    frappe.has_permission("Document Management Settings", "write", throw=True)
     job = frappe.enqueue(
         "document_management.search.indexer.rebuild_index",
         queue="long",
@@ -505,7 +606,7 @@ def enqueue_rebuild_index():
 
 @frappe.whitelist()
 def rebuild_index():
-    frappe.has_permission("Document Management Settings", throw=True)
+    frappe.has_permission("Document Management Settings", "write", throw=True)
     settings = frappe.get_single('Document Management Settings')
     indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
 
@@ -594,18 +695,23 @@ def extract_and_index_ocr(doc_type, doc_name):
     
     if files:
         import pdfplumber
+        from frappe.utils.file_manager import get_file_path
+        from document_management.frappe_document_management.utils.file_crypto import (
+            decrypted_temp_file,
+        )
+
         for file_data in files:
-            file_path = frappe.get_site_path("public", file_data.file_url.lstrip("/"))
-            if not os.path.exists(file_path):
-                file_path = frappe.get_site_path("private", file_data.file_url.lstrip("/"))
-                
-            if file_path.endswith('.pdf') and os.path.exists(file_path):
+            if not file_data.file_url:
+                continue
+            file_path = get_file_path(file_data.file_url)
+            if file_path and file_path.lower().endswith(".pdf") and os.path.exists(file_path):
                 try:
-                    with pdfplumber.open(file_path) as pdf:
-                        for page in pdf.pages:
-                            text = page.extract_text()
-                            if text:
-                                extracted_text += text + "\n"
+                    with decrypted_temp_file(file_url=file_data.file_url, path=file_path) as readable_path:
+                        with pdfplumber.open(readable_path) as pdf:
+                            for page in pdf.pages:
+                                text = page.extract_text()
+                                if text:
+                                    extracted_text += text + "\n"
                 except Exception as e:
                     frappe.log_error(title="OCR Error", message=f"Error extracting PDF text: {e}")
 

@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 
@@ -556,6 +557,8 @@ def build_natural_query(
     tokens = query_tokens(query)
     terms = significant_terms(query, language=language)
     if not terms:
+        terms = list(dict.fromkeys(tokens))
+    if not terms:
         return tantivy.Query.empty_query()
 
     field_weights = (
@@ -569,7 +572,7 @@ def build_natural_query(
         alternatives = []
         for field, weight in field_weights.items():
             for variant in variants:
-                parsed = index.parse_query(variant, [field])
+                parsed = index.parse_query(json.dumps(variant), [field])
                 if weight != 1:
                     parsed = tantivy.Query.boost_query(parsed, float(weight))
                 alternatives.append((tantivy.Occur.Should, parsed))

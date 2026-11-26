@@ -12,6 +12,108 @@ frappe.ui.form.on('Document Management Settings', {
 
     refresh(frm) {
         render_provider_summary(frm);
+        frm.add_custom_button(__('Check System Health'), () => {
+            frappe.call({
+                method: 'document_management.frappe_document_management.doctype.document_management_settings.document_management_settings.check_system_health',
+                freeze: true,
+                callback: (r) => {
+                    const data = r.message || {};
+                    const escape = (val) => $('<div>').text(val == null ? '' : String(val)).html();
+                    const badge = (ok) => ok
+                        ? '<span class="indicator-pill green">' + __('OK') + '</span>'
+                        : '<span class="indicator-pill red">' + __('Missing / Error') + '</span>';
+                    const binaries = Object.entries(data.binaries || {})
+                        .map(([name, ok]) => `<tr><td><code>${escape(name)}</code></td><td>${badge(ok)}</td></tr>`)
+                        .join('');
+                    const endpoints = Object.entries(data.endpoints || {})
+                        .filter(([, info]) => info && typeof info === 'object')
+                        .map(([label, info]) => `<tr><td>${escape(label)} (${escape(info.provider)})</td><td>${badge(info.ok)} ${escape(info.error || info.detail || info.endpoint || '')}</td></tr>`)
+                        .join('');
+                    const rag = data.rag_index || {};
+                    const ingestion = data.folder_ingestion || {};
+                    const ingestionHtml = ingestion.enabled
+                        ? `<p>${__('Folder Ingestion')}: ${badge(Boolean(ingestion.ok))} ${escape(ingestion.error || ingestion.path || '')}</p>`
+                        : `<p>${__('Folder Ingestion')}: <span class="text-muted">${__('Disabled')}</span></p>`;
+                    frappe.msgprint({
+                        title: __('Document Management System Health'),
+                        wide: true,
+                        message: `
+                            <h5>${__('System Binaries')}</h5>
+                            <table class="table table-bordered table-condensed"><tbody>${binaries}</tbody></table>
+                            <h5>${__('Search & RAG Indexes')}</h5>
+                            <p>${__('Full-text (Tantivy)')}: ${badge(Boolean(data.tantivy_ready))}</p>
+                            <p>${__('RAG Index')}: ${badge(Boolean(rag.valid))} ${escape(rag.error || (rag.chunks != null ? `${rag.chunks} chunks` : ''))}</p>
+                            <h5>${__('Storage & Ingestion')}</h5>
+                            <p>${__('File Encryption at Rest')}: ${data.encryption_enabled ? '<span class="indicator-pill green">' + __('Enabled') + '</span>' : '<span class="text-muted">' + __('Disabled') + '</span>'}</p>
+                            ${ingestionHtml}
+                            <h5>${__('AI Endpoints')}</h5>
+                            <table class="table table-bordered table-condensed"><tbody>${endpoints}</tbody></table>
+                        `
+                    });
+                }
+            });
+        }, __('Maintenance'));
+
+        frm.add_custom_button(__('Run Archive Sanity Check'), () => {
+            frappe.call({
+                method: 'document_management.frappe_document_management.utils.archive_sanity.run_document_archive_sanity_check',
+                freeze: true,
+                freeze_message: __('Checking document archive integrity...'),
+                callback: (r) => {
+                    const data = r.message || {};
+                    const escape = (val) => $('<div>').text(val == null ? '' : String(val)).html();
+                    const counts = data.counts || {error: 0, warning: 0};
+                    const issues = (data.issues || []).slice(0, 100);
+                    const rows = issues.map((item) => `
+                        <tr>
+                            <td><span class="indicator-pill ${item.severity === 'error' ? 'red' : 'orange'}">${escape(item.severity)}</span></td>
+                            <td><code>${escape(item.code)}</code></td>
+                            <td>${escape(item.document || item.file || '')}</td>
+                            <td>${escape(item.message)}</td>
+                        </tr>
+                    `).join('');
+                    const truncated = (data.issues || []).length > issues.length
+                        ? `<p class="text-muted">${__('Showing first 100 issues.')}</p>`
+                        : '';
+                    frappe.msgprint({
+                        title: __('Archive Sanity Check'),
+                        indicator: counts.error ? 'red' : (counts.warning ? 'orange' : 'green'),
+                        wide: true,
+                        message: `
+                            <p>
+                                <strong>${__('Documents checked')}:</strong> ${escape(data.documents_checked || 0)} &middot;
+                                <strong>${__('Versions checked')}:</strong> ${escape(data.versions_checked || 0)} &middot;
+                                <strong>${__('Errors')}:</strong> ${escape(counts.error || 0)} &middot;
+                                <strong>${__('Warnings')}:</strong> ${escape(counts.warning || 0)}
+                            </p>
+                            ${issues.length
+                                ? `<table class="table table-bordered table-condensed"><thead><tr><th>${__('Severity')}</th><th>${__('Code')}</th><th>${__('Target')}</th><th>${__('Message')}</th></tr></thead><tbody>${rows}</tbody></table>${truncated}`
+                                : `<div class="alert alert-success">${__('No archive integrity issues found.')}</div>`}
+                        `
+                    });
+                }
+            });
+        }, __('Maintenance'));
+
+        if (frm.doc.enable_file_encryption) {
+            frm.add_custom_button(__('Encrypt Existing Files'), () => {
+                frappe.confirm(
+                    __('Encrypt all unencrypted private Document files in the background using the site encryption key?'),
+                    () => {
+                        frappe.call({
+                            method: 'document_management.frappe_document_management.utils.file_crypto.enqueue_encrypt_existing_documents',
+                            freeze: true,
+                            callback: () => {
+                                frappe.show_alert({
+                                    message: __('Background encryption job queued'),
+                                    indicator: 'blue'
+                                });
+                            }
+                        });
+                    }
+                );
+            }, __('Maintenance'));
+        }
     },
 
     chat_provider(frm) {

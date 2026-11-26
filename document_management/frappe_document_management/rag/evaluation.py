@@ -33,7 +33,11 @@ REFUSAL_MARKERS = (
     "no contiene suficiente",
     "no dispongo de evidencia",
     "not enough information",
+    "not enough evidence",
     "insufficient evidence",
+    "pas assez d'informations",
+    "preuves insuffisantes",
+    "ne contiennent pas assez",
 )
 
 
@@ -517,8 +521,8 @@ def run_evaluation(include_generation=False, dataset_path=None, requested_by=Non
                 )
                 answer = complete_chat(messages).strip()
             else:
-                answer = (
-                    "No existe evidencia suficiente en los documentos disponibles."
+                answer = frappe._(
+                    "Not enough evidence was found in the available documents."
                 )
             result["generation"] = score_generation(case, answer, ranked)
         results.append(result)

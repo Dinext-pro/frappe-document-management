@@ -146,12 +146,16 @@ class PdfSearchViewer {
             }
             const fileVersion = url.searchParams.get("file_version")
                 || "Searchable PDF";
+            const versionName = url.searchParams.get("version_name");
             const fallback = new URL(
                 "/api/method/document_management.frappe_document_management.page.document_management_console.document_management_console.render_document_pdf_page",
                 window.location.origin,
             );
             fallback.searchParams.set("document", documentName);
             fallback.searchParams.set("file_version", fileVersion);
+            if (versionName) {
+                fallback.searchParams.set("version_name", versionName);
+            }
             fallback.searchParams.set("page", pageNumber);
             fallback.searchParams.set("dpi", this.fallbackDpi());
             return fallback.toString();
@@ -213,6 +217,7 @@ class PdfSearchViewer {
         if (!this.viewer.pagesCount) {
             return;
         }
+        const MAX_FALLBACK_CACHE = 20;
         [
             Number(pageNumber),
             Number(pageNumber) + 1,
@@ -221,13 +226,24 @@ class PdfSearchViewer {
             .filter((page) => page >= 1 && page <= this.viewer.pagesCount)
             .forEach((page) => {
                 const url = this.getFallbackUrl(page);
-                if (!url || this.fallbackImageCache.has(url)) {
+                if (!url) {
+                    return;
+                }
+                if (this.fallbackImageCache.has(url)) {
+                    // Refresh LRU position
+                    const existing = this.fallbackImageCache.get(url);
+                    this.fallbackImageCache.delete(url);
+                    this.fallbackImageCache.set(url, existing);
                     return;
                 }
                 const image = new Image();
                 image.decoding = "async";
                 image.src = url;
                 this.fallbackImageCache.set(url, image);
+                while (this.fallbackImageCache.size > MAX_FALLBACK_CACHE) {
+                    const oldestKey = this.fallbackImageCache.keys().next().value;
+                    this.fallbackImageCache.delete(oldestKey);
+                }
             });
     }
 
@@ -334,6 +350,13 @@ class PdfSearchViewer {
         this.fitWidthToContainer();
     }
 
+    rotateClockwise() {
+        if (!this.viewer.pagesCount) {
+            return;
+        }
+        this.viewer.pagesRotation = ((this.viewer.pagesRotation || 0) + 90) % 360;
+    }
+
     dispatchFind(force) {
         if (!this.viewer.pagesCount) {
             return;
@@ -410,8 +433,10 @@ function createVueComponent(Vue) {
         },
         setup(props) {
             const root = Vue.ref(null);
+            const searchInput = Vue.ref(null);
             const viewer = Vue.shallowRef(null);
             const currentPage = Vue.ref(props.page || 1);
+            const pageInput = Vue.ref(String(props.page || 1));
             const pageCount = Vue.ref(0);
             const currentMatch = Vue.ref(0);
             const totalMatches = Vue.ref(0);
@@ -423,6 +448,16 @@ function createVueComponent(Vue) {
             const searchQuery = Vue.ref(initialQuery());
             let searchTimer = 0;
 
+            const onKeydown = (event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+                    if (searchInput.value) {
+                        event.preventDefault();
+                        searchInput.value.focus();
+                        searchInput.value.select();
+                    }
+                }
+            };
+
             Vue.onMounted(() => {
                 viewer.value = new PdfSearchViewer(root.value, {
                     source: props.src,
@@ -431,6 +466,7 @@ function createVueComponent(Vue) {
                     maxScale: props.maxScale,
                     onPageChange: (current, total) => {
                         currentPage.value = current;
+                        pageInput.value = String(current);
                         pageCount.value = total;
                     },
                     onMatchesChange: (current, total) => {
@@ -469,24 +505,36 @@ function createVueComponent(Vue) {
                 window.clearTimeout(searchTimer);
                 viewer.value?.setQuery(searchQuery.value);
             };
-            const runSearchAndNext = () => {
+            const runSearchAndNext = (event) => {
                 runSearch();
-                viewer.value?.nextMatch(false);
+                viewer.value?.nextMatch(Boolean(event?.shiftKey));
             };
             const scheduleSearch = () => {
                 window.clearTimeout(searchTimer);
                 searchTimer = window.setTimeout(runSearch, 220);
             };
+            const jumpToPage = () => {
+                const parsed = parseInt(pageInput.value, 10);
+                if (!Number.isNaN(parsed) && parsed >= 1) {
+                    viewer.value?.goToPage(parsed);
+                } else {
+                    pageInput.value = String(currentPage.value);
+                }
+            };
 
             return {
                 root,
+                searchInput,
                 currentPage,
+                pageInput,
                 pageCount,
                 currentMatch,
                 totalMatches,
                 scalePercent,
                 searchQuery,
                 error,
+                onKeydown,
+                jumpToPage,
                 hasSearch: Vue.computed(
                     () => Boolean(searchQuery.value.trim())
                 ),
@@ -505,16 +553,22 @@ function createVueComponent(Vue) {
                 zoomOut: () => viewer.value?.zoomOut(),
                 zoomIn: () => viewer.value?.zoomIn(),
                 fitWidth: () => viewer.value?.fitWidth(),
+                rotateClockwise: () => viewer.value?.rotateClockwise(),
             };
         },
         template: `
-            <div class="loan-pdf-shell">
+            <div class="loan-pdf-shell" tabindex="-1" @keydown="onKeydown">
                 <div class="loan-pdf-toolbar">
                     <button type="button" @click="previousPage" :disabled="currentPage <= 1"
                         title="${__("Previous page")}">
                         <i class="fa fa-chevron-left"></i>
                     </button>
-                    <span>{{ currentPage }} / {{ pageCount || "..." }}</span>
+                    <input v-model="pageInput" type="number" min="1" :max="pageCount || 1"
+                        class="loan-pdf-page-input"
+                        style="width:44px;height:24px;text-align:center;border:1px solid rgba(255,255,255,0.25);border-radius:4px;background:rgba(255,255,255,0.12);color:#fff;font-size:12px;"
+                        title="${__("Go to page")}"
+                        @keyup.enter="jumpToPage" @blur="jumpToPage">
+                    <span>/ {{ pageCount || "..." }}</span>
                     <button type="button" @click="nextPage"
                         :disabled="!pageCount || currentPage >= pageCount"
                         title="${__("Next page")}">
@@ -531,9 +585,12 @@ function createVueComponent(Vue) {
                     <button type="button" @click="zoomIn" title="${__("Zoom in")}">
                         <i class="fa fa-search-plus"></i>
                     </button>
+                    <button type="button" @click="rotateClockwise" title="${__("Rotate clockwise")}">
+                        <i class="fa fa-rotate-right"></i>
+                    </button>
                     <div class="loan-pdf-search">
                         <i class="fa fa-search"></i>
-                        <input v-model="searchQuery" type="search"
+                        <input ref="searchInput" v-model="searchQuery" type="search"
                             placeholder="${__("Search in document")}"
                             @input="scheduleSearch" @keyup.enter="runSearchAndNext">
                         <button v-if="hasSearch" type="button" class="loan-pdf-clear"
@@ -568,3 +625,4 @@ window.LoanManagerPdfSearchViewer = {
     PdfSearchViewer,
     createVueComponent,
 };
+window.DocumentManagementPdfViewer = window.LoanManagerPdfSearchViewer;

@@ -40,10 +40,22 @@ DOCUMENT_FIELDS = [
     "creation as document_date",
     "party_type",
     "party_name",
+    "description",
+    "only_me",
+    "expiry_date",
+    "review_date",
     "is_deleted",
     "deleted_at",
     "deleted_by",
 ]
+SORT_OPTIONS = {
+    "modified_desc": "modified desc",
+    "modified_asc": "modified asc",
+    "title_asc": "title asc, modified desc",
+    "title_desc": "title desc, modified desc",
+    "creation_desc": "creation desc",
+    "document_code_asc": "document_code asc, modified desc",
+}
 SUPPORTED_EXTENSIONS = {
     ".pdf",
     ".png",
@@ -203,10 +215,27 @@ def _save_version_file(version, folder=None, upload=None):
 
 
 @frappe.whitelist()
-def download_document_file(document, file_version="Original", attachment=0):
+def download_document_file(
+    document,
+    file_version="Original",
+    attachment=0,
+    version_name=None,
+):
     doc = frappe.get_doc("Document", document)
     doc.check_permission("read")
-    version = doc.get_current_version()
+    if doc.is_deleted and (
+        frappe.session.user != "Administrator"
+        and doc.owner != frappe.session.user
+        and "System Manager" not in frappe.get_roles()
+    ):
+        frappe.throw("Document is in trash.", frappe.PermissionError)
+    if version_name:
+        version = next(
+            (row for row in (doc.get("versions") or []) if row.name == version_name),
+            None,
+        )
+    else:
+        version = doc.get_current_version()
     if not version:
         frappe.throw("The document has no file.")
     if file_version == "Searchable PDF":
@@ -225,10 +254,144 @@ def download_document_file(document, file_version="Original", attachment=0):
 
 
 @frappe.whitelist()
-def render_document_pdf_page(document, page=1, file_version="Searchable PDF", dpi=144):
+def get_document_versions(doc_name):
+    doc = frappe.get_doc("Document", doc_name)
+    doc.check_permission("read")
+    versions = []
+    for row in reversed(doc.get("versions") or []):
+        versions.append(
+            {
+                "name": row.name,
+                "version_number": row.version_number,
+                "release_date": str(row.release_date or ""),
+                "change_log": row.change_log or "",
+                "file_size": int(row.file_size or 0),
+                "ocr_status": row.ocr_status or "Pending",
+                "preview_status": row.preview_status or "",
+                "has_preview": bool(row.preview_attachment),
+                "download_url": (
+                    document_file_url(
+                        doc.name,
+                        "Original",
+                        attachment=True,
+                        version_name=row.name,
+                    )
+                    if row.attachment
+                    else ""
+                ),
+                "preview_url": (
+                    document_file_url(
+                        doc.name,
+                        "Searchable PDF",
+                        attachment=False,
+                        version_name=row.name,
+                    )
+                    if row.preview_attachment
+                    else ""
+                ),
+            }
+        )
+    return versions
+
+
+@frappe.whitelist()
+def get_document_ocr_text(doc_name):
+    doc = frappe.get_doc("Document", doc_name)
+    doc.check_permission("read")
+    return {
+        "document": doc.name,
+        "title": doc.title,
+        "ocr_status": doc.ocr_status or "Pending",
+        "ocr_content": doc.ocr_content or "",
+    }
+
+
+@frappe.whitelist()
+def update_document_metadata(
+    doc_name,
+    title=None,
+    category=None,
+    status=None,
+    document_code=None,
+    department=None,
+    description=None,
+    only_me=None,
+    expiry_date=None,
+    review_date=None,
+    tags=None,
+):
+    doc = frappe.get_doc("Document", doc_name)
+    doc.check_permission("write")
+    if doc.is_deleted:
+        frappe.throw("Restore the document before editing it.")
+    if title is not None:
+        cleaned_title = str(title).strip()
+        if not cleaned_title:
+            frappe.throw("Title is required.")
+        doc.title = cleaned_title
+    if category is not None:
+        cat = str(category).strip()
+        if cat and not frappe.db.exists("Document Category", cat):
+            frappe.throw("Document category does not exist.")
+        doc.category = cat or None
+    if status is not None and str(status).strip():
+        st = str(status).strip()
+        if st not in {"Draft", "Published", "Obsolete"}:
+            frappe.throw("Invalid document status.")
+        doc.status = st
+    if document_code is not None:
+        doc.document_code = str(document_code).strip() or None
+    if department is not None and department_doctype_exists():
+        dept = str(department).strip()
+        if dept and not frappe.db.exists("Department", dept):
+            frappe.throw("Department does not exist.")
+        doc.department = dept or None
+    if description is not None:
+        doc.description = str(description)
+    if only_me is not None:
+        doc.only_me = 1 if str(only_me).strip().lower() in {"1", "true"} else 0
+    if expiry_date is not None:
+        doc.expiry_date = str(expiry_date).strip() or None
+    if review_date is not None:
+        doc.review_date = str(review_date).strip() or None
+    if tags is not None:
+        tag_list = json.loads(tags) if isinstance(tags, str) else tags
+        cleaned_tags = list(
+            dict.fromkeys(str(t).strip() for t in (tag_list or []) if str(t).strip())
+        )
+        for tag in cleaned_tags:
+            if not frappe.db.exists("Document Tag", tag):
+                frappe.throw(f"Document tag does not exist: {tag}")
+        doc.set("tags", [])
+        for tag in cleaned_tags:
+            doc.append("tags", {"tag": tag})
+    doc.save()
+    return {"name": doc.name, "title": doc.title, "status": doc.status}
+
+
+@frappe.whitelist()
+def render_document_pdf_page(
+    document,
+    page=1,
+    file_version="Searchable PDF",
+    dpi=144,
+    version_name=None,
+):
     doc = frappe.get_doc("Document", document)
     doc.check_permission("read")
-    version = doc.get_current_version()
+    if doc.is_deleted and (
+        frappe.session.user != "Administrator"
+        and doc.owner != frappe.session.user
+        and "System Manager" not in frappe.get_roles()
+    ):
+        frappe.throw("Document is in trash.", frappe.PermissionError)
+    if version_name:
+        version = next(
+            (row for row in (doc.get("versions") or []) if row.name == version_name),
+            None,
+        )
+    else:
+        version = doc.get_current_version()
     if not version:
         frappe.throw("The document has no file.")
 
@@ -249,6 +412,17 @@ def render_document_pdf_page(document, page=1, file_version="Searchable PDF", dp
         render_dpi = min(max(int(dpi or 144), 96), 300)
     except (TypeError, ValueError):
         render_dpi = 144
+
+    checksum = (
+        version.preview_checksum
+        if file_version == "Searchable PDF" and version.preview_attachment
+        else version.file_checksum
+    ) or ""
+    etag = f'"{hashlib.sha256(f"{doc.name}:{version.name}:{checksum}:{file_version}:{page_number}:{render_dpi}".encode()).hexdigest()[:24]}"'
+    request = getattr(frappe.local, "request", None)
+    if request and request.headers.get("If-None-Match") == etag:
+        frappe.local.response.http_status_code = 304
+        return
 
     pdftoppm = shutil.which("pdftoppm")
     if not pdftoppm:
@@ -291,6 +465,11 @@ def render_document_pdf_page(document, page=1, file_version="Searchable PDF", dp
             frappe.local.response.type = "download"
             frappe.local.response.display_content_as = "inline"
             frappe.local.response.content_type = "image/png"
+            headers = getattr(frappe.local.response, "headers", None)
+            if not isinstance(headers, dict):
+                frappe.local.response.headers = {}
+            frappe.local.response.headers["ETag"] = etag
+            frappe.local.response.headers["Cache-Control"] = "private, max-age=3600"
 
 
 def _enqueue_index_refresh(names, remove=False):
@@ -418,7 +597,7 @@ def delete_saved_view(view):
     return {"deleted": doc.name}
 
 
-def _get_deleted_documents(search_text, filters, limit):
+def _get_deleted_documents(search_text, filters, limit, start=0, sort_by=None):
     filters = {**filters, "is_deleted": 1}
     or_filters = None
     if search_text:
@@ -436,8 +615,8 @@ def _get_deleted_documents(search_text, filters, limit):
         fields=DOCUMENT_FIELDS,
         filters=filters,
         or_filters=or_filters,
-        limit_page_length=min(limit * 5, 500),
-        order_by="deleted_at desc, modified desc",
+        limit_page_length=min((start + limit) * 5, 1000),
+        order_by=SORT_OPTIONS.get(str(sort_by or "").strip(), "deleted_at desc, modified desc"),
     )
     visible = []
     for row in candidates:
@@ -449,9 +628,8 @@ def _get_deleted_documents(search_text, filters, limit):
             user=frappe.session.user,
         ):
             visible.append(row)
-        if len(visible) >= limit:
-            break
-    return visible
+    page_rows = visible[start : start + limit]
+    return page_rows, len(visible), len(visible) > (start + limit)
 
 
 @frappe.whitelist()
@@ -464,11 +642,33 @@ def get_documents(
     tags=None,
     trash=0,
     limit=50,
+    start=0,
+    include_meta=0,
+    sort_by=None,
 ):
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
         limit = 50
+    try:
+        start = max(int(start or 0), 0)
+    except (TypeError, ValueError):
+        start = 0
+    try:
+        include_meta = bool(int(include_meta or 0))
+    except (TypeError, ValueError):
+        include_meta = False
+
+    def _finish(rows, total_count=None, has_more_rows=False):
+        if not include_meta:
+            return rows
+        return {
+            "documents": rows,
+            "total": len(rows) if total_count is None else int(total_count),
+            "start": start,
+            "limit": limit,
+            "has_more": bool(has_more_rows),
+        }
     search_text = (search_text or "").strip()
     from document_management.search.advanced import (
         apply_advanced_document_filters,
@@ -536,15 +736,23 @@ def get_documents(
                 pluck="parent",
             )
             if not matching_parents:
-                return []
+                return _finish([], 0, False)
             filters["name"] = ["in", matching_parents]
 
     filters, search_text = apply_advanced_document_filters(filters, advanced_query)
 
     ranked_names = None
     search_metadata = {}
+    total_count = None
+    has_more_rows = False
     if trash:
-        docs = _get_deleted_documents(search_text, filters, limit)
+        docs, total_count, has_more_rows = _get_deleted_documents(
+            search_text,
+            filters,
+            limit,
+            start=start,
+            sort_by=sort_by,
+        )
     elif search_text:
         filters["is_deleted"] = 0
         allowed_names = set(
@@ -555,40 +763,44 @@ def get_documents(
                 limit_page_length=100000,
             )
         )
+        fetch_limit = min(start + limit + 1, 500)
         try:
             from document_management.frappe_document_management.rag.index import (
                 IndexRebuildRequired,
                 search_documents,
             )
 
-            results = search_documents(search_text, allowed_names, limit=limit)
+            results = search_documents(search_text, allowed_names, limit=fetch_limit)
             ranked_names = [row["doc_name"] for row in results]
             search_metadata = {row["doc_name"]: row for row in results}
             if not ranked_names:
-                ranked_names = _database_search_names(search_text, filters, limit)
+                ranked_names = _database_search_names(search_text, filters, fetch_limit)
         except IndexRebuildRequired as exc:
             frappe.logger("document_search").warning(
                 "RAG index unavailable; using database search: %s",
                 exc,
             )
-            ranked_names = _database_search_names(search_text, filters, limit)
+            ranked_names = _database_search_names(search_text, filters, fetch_limit)
         except Exception:
             frappe.log_error(
                 title="Document Search Error",
                 message=frappe.get_traceback(),
             )
-            ranked_names = _database_search_names(search_text, filters, limit)
+            ranked_names = _database_search_names(search_text, filters, fetch_limit)
 
         if not ranked_names:
-            return []
+            return _finish([], 0, False)
         if "name" in filters:
             existing = filters["name"]
             if isinstance(existing, list) and existing[0] == "in":
-                filters["name"] = ["in", [n for n in ranked_names if n in existing[1]]]
-            else:
-                filters["name"] = ["in", ranked_names]
-        else:
-            filters["name"] = ["in", ranked_names]
+                existing_set = set(existing[1])
+                ranked_names = [n for n in ranked_names if n in existing_set]
+        total_count = len(ranked_names)
+        has_more_rows = total_count > (start + limit)
+        ranked_names = ranked_names[start : start + limit]
+        if not ranked_names:
+            return _finish([], total_count, False)
+        filters["name"] = ["in", ranked_names]
         docs = frappe.get_list(
             "Document",
             fields=DOCUMENT_FIELDS,
@@ -598,13 +810,25 @@ def get_documents(
         )
     elif not trash:
         filters["is_deleted"] = 0
-        docs = frappe.get_list(
+        order_clause = SORT_OPTIONS.get(str(sort_by or "").strip(), "modified desc")
+        fetched = frappe.get_list(
             "Document",
             fields=DOCUMENT_FIELDS,
             filters=filters,
-            limit_page_length=limit,
-            order_by="modified desc",
+            limit_start=start,
+            limit_page_length=limit + 1,
+            order_by=order_clause,
         )
+        has_more_rows = len(fetched) > limit
+        docs = fetched[:limit]
+        if include_meta:
+            count_rows = frappe.get_list(
+                "Document",
+                filters=filters,
+                fields=["count(name) as total"],
+                limit_page_length=1,
+            )
+            total_count = int((count_rows[0].get("total") if count_rows else 0) or 0)
 
     if ranked_names is not None:
         by_name = {doc.name: doc for doc in docs}
@@ -684,7 +908,7 @@ def get_documents(
             doc.version = latest_version.version_number
             doc.is_markdown = getattr(latest_version, "is_markdown", 0)
 
-    return docs
+    return _finish(docs, total_count, has_more_rows)
 
 
 @frappe.whitelist()
@@ -793,7 +1017,10 @@ def permanently_delete_documents(documents):
 def force_generate_pdf(doc_name):
     import shutil
     from frappe import _
-    frappe.get_doc("Document", doc_name).check_permission("write")
+    doc = frappe.get_doc("Document", doc_name)
+    doc.check_permission("write")
+    if getattr(doc, "is_deleted", 0):
+        frappe.throw("Restore the document before generating a preview.")
     if not shutil.which("libreoffice"):
         return _("ERROR: LibreOffice is not installed on the server ('libreoffice' command not found). Please install it using: sudo apt-get install libreoffice-core --no-install-recommends")
 
@@ -816,6 +1043,8 @@ def reprocess_ocr(doc_name):
 
     doc = frappe.get_doc("Document", doc_name)
     doc.check_permission("write")
+    if getattr(doc, "is_deleted", 0):
+        frappe.throw("Restore the document before reprocessing OCR.")
     version = doc.get_current_version()
     if not version:
         frappe.throw("The document does not have an attached version.")
@@ -871,14 +1100,27 @@ def reprocess_ocr(doc_name):
 
 @frappe.whitelist()
 def get_categories():
-    return frappe.get_list("Document Category", fields=["name"], order_by="name asc")
+    return frappe.get_list(
+        "Document Category",
+        fields=["name"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
 
 @frappe.whitelist()
 def get_folders():
-    return frappe.get_list("File", filters={"is_folder": 1}, fields=["name as folder_name", "file_name"], order_by="file_name asc")
+    return frappe.get_list(
+        "File",
+        filters={"is_folder": 1},
+        fields=["name as folder_name", "file_name"],
+        order_by="file_name asc",
+        limit_page_length=0,
+    )
 
-@frappe.whitelist()
-def quick_upload(
+
+def create_document_from_bytes(
+    filename,
+    content,
     title=None,
     category=None,
     document_code=None,
@@ -895,21 +1137,15 @@ def quick_upload(
 ):
     from frappe.utils import today
 
-    form = frappe.form_dict
-    title = title or form.get("title")
-    category = category or form.get("category")
-    document_code = document_code or form.get("document_code")
-    tags = tags or form.get("tags")
-    folder = folder or form.get("folder")
-    department = department or form.get("department")
-    party_type = party_type or form.get("party_type")
-    party_name = party_name or form.get("party_name")
-    description = description or form.get("description")
-    status = status or form.get("status")
-    only_me = only_me or form.get("only_me")
-    roles = roles or form.get("roles")
-    departments = departments or form.get("departments")
-    upload = _upload_metadata()
+    if not content or not filename:
+        frappe.throw("A file is required.")
+    _validate_uploaded_document(filename, content)
+    upload = (
+        filename,
+        content,
+        hashlib.sha256(content).hexdigest(),
+        len(content),
+    )
     frappe.has_permission("Document", "create", throw=True)
     has_department = department_doctype_exists()
     try:
@@ -976,6 +1212,43 @@ def quick_upload(
 
 
 @frappe.whitelist()
+def quick_upload(
+    title=None,
+    category=None,
+    document_code=None,
+    tags=None,
+    folder=None,
+    department=None,
+    party_type=None,
+    party_name=None,
+    description=None,
+    status=None,
+    only_me=0,
+    roles=None,
+    departments=None,
+):
+    form = frappe.form_dict
+    filename, content = _uploaded_request_content()
+    return create_document_from_bytes(
+        filename=filename,
+        content=content,
+        title=title or form.get("title"),
+        category=category or form.get("category"),
+        document_code=document_code or form.get("document_code"),
+        tags=tags or form.get("tags"),
+        folder=folder or form.get("folder"),
+        department=department or form.get("department"),
+        party_type=party_type or form.get("party_type"),
+        party_name=party_name or form.get("party_name"),
+        description=description or form.get("description"),
+        status=status or form.get("status"),
+        only_me=only_me or form.get("only_me"),
+        roles=roles or form.get("roles"),
+        departments=departments or form.get("departments"),
+    )
+
+
+@frappe.whitelist()
 def add_document_version(doc_name=None, change_log=None, folder=None):
     from frappe.utils import today
 
@@ -1022,4 +1295,9 @@ def add_document_version(doc_name=None, change_log=None, folder=None):
 
 @frappe.whitelist()
 def get_tags():
-    return frappe.get_list("Document Tag", fields=["name", "color"], order_by="name asc")
+    return frappe.get_list(
+        "Document Tag",
+        fields=["name", "color"],
+        order_by="name asc",
+        limit_page_length=0,
+    )

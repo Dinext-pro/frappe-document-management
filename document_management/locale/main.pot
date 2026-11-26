@@ -2418,3 +2418,9 @@ msgstr ""
 
 msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
 msgstr ""
+
+msgid "Search indexed operational records. Supports exact phrases, exclusions, prefixes, and typo tolerance."
+msgstr ""
+
+msgid "Search customers, invoices, loans, or exact phrases..."
+msgstr ""

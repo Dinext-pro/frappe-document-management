@@ -2614,3 +2614,9 @@ msgstr "Aucune correspondance exacte trouvée. Affichage des résultats similair
 
 msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
 msgstr "La configuration des DocTypes indexés a changé. Reconstruisez la recherche des DocTypes indexés pour appliquer les nouveaux paramètres aux enregistrements existants."
+
+msgid "Search indexed operational records. Supports exact phrases, exclusions, prefixes, and typo tolerance."
+msgstr "Recherchez des enregistrements opérationnels indexés. Prend en charge les phrases exactes, exclusions, préfixes et fautes de frappe."
+
+msgid "Search customers, invoices, loans, or exact phrases..."
+msgstr "Rechercher clients, factures, prêts ou phrases exactes..."

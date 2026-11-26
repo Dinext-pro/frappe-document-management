@@ -1650,3 +1650,23 @@ class TestIndexedDocTypesSearchPhaseDF(TestCase):
         self.assertIn("response.fuzzy_fallback", js)
         self.assertIn("lastAllFacets", js)
         self.assertIn("showSyntaxHelp", js)
+
+        # Guard Desk page microtemplates against single quotes or escaped quotes inside {{ ... }}
+        import re
+
+        pages_root = (
+            REPO_ROOT / "document_management" / "frappe_document_management" / "page"
+        )
+        for html_file in pages_root.rglob("*.html"):
+            content = html_file.read_text(encoding="utf-8")
+            for expr in re.findall(r"\{\{(.*?)\}\}", content, flags=re.DOTALL):
+                self.assertNotIn(
+                    "'",
+                    expr,
+                    f"Single quote inside microtemplate expression in {html_file}: {expr}",
+                )
+                self.assertNotIn(
+                    '\\"',
+                    expr,
+                    f"Escaped double quote inside microtemplate expression in {html_file}: {expr}",
+                )

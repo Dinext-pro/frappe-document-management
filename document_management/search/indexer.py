@@ -1,13 +1,14 @@
 import json
 import os
-from urllib.parse import quote
 from html import unescape
 from html.parser import HTMLParser
+from urllib.parse import quote
 
 import frappe
-from document_management.search import tantivy_backend, semantic_backend
+from document_management.search import semantic_backend, tantivy_backend
 from document_management.search.query import (
     current_search_language,
+    parse_search_syntax,
     significant_terms,
 )
 
@@ -30,6 +31,13 @@ SEARCHABLE_FIELD_TYPES = {
     "Percent",
     "Check",
 }
+
+ALLOWED_SORT_MODES = frozenset({"relevance", "modified_desc", "modified_asc", "title_asc"})
+INDEX_REBUILT_EVENT = "document_management:indexed_search_rebuilt"
+MAX_ATTACHMENT_PAGES = 50
+MAX_ATTACHMENT_CHARS = 100_000
+MAX_ATTACHMENT_FILE_BYTES = 25 * 1024 * 1024
+INDEXABLE_ATTACHMENT_EXTENSIONS = frozenset({".pdf", ".txt", ".md"})
 
 
 class _TextExtractor(HTMLParser):
@@ -82,9 +90,22 @@ def _is_searchable_field(field):
     )
 
 
-def get_document_content(doc):
+def _parse_excluded_fields(raw_excluded):
+    if not raw_excluded:
+        return frozenset()
+    if isinstance(raw_excluded, (list, tuple, set, frozenset)):
+        items = raw_excluded
+    else:
+        items = str(raw_excluded).replace("\n", ",").split(",")
+    return frozenset(str(item).strip() for item in items if str(item).strip())
+
+
+def get_document_content(doc, excluded_fields=None):
+    excluded = _parse_excluded_fields(excluded_fields)
     content_parts = []
     for field in doc.meta.fields:
+        if field.fieldname in excluded:
+            continue
         if _is_searchable_field(field):
             val = doc.get(field.fieldname)
             if val not in (None, ""):
@@ -97,6 +118,8 @@ def get_document_content(doc):
             for row in doc.get(field.fieldname) or []:
                 row_values = []
                 for child_field in row.meta.fields:
+                    if child_field.fieldname in excluded:
+                        continue
                     if not _is_searchable_field(child_field):
                         continue
                     value = row.get(child_field.fieldname)
@@ -135,17 +158,100 @@ def get_document_comments(doc_type, doc_names):
     return comments
 
 
-def get_indexable_content(doc, comments=None):
-    content_parts = [get_document_content(doc)]
-    if comments is None:
-        comments = get_document_comments(doc.doctype, [doc.name]).get(
-            doc.name,
-            [],
+def _extract_pdf_attachments_text(doc_type, doc_name):
+    files = frappe.get_all(
+        "File",
+        filters={
+            "attached_to_doctype": doc_type,
+            "attached_to_name": doc_name,
+            "is_folder": 0,
+        },
+        fields=["file_url", "name"],
+        limit_page_length=0,
+    )
+    if not files:
+        return ""
+
+    from frappe.utils.file_manager import get_file_path
+    from document_management.frappe_document_management.utils.file_crypto import (
+        decrypted_temp_file,
+    )
+
+    parts = []
+    total_chars = 0
+    pdfplumber_mod = None
+    for file_data in files:
+        if total_chars >= MAX_ATTACHMENT_CHARS:
+            break
+        file_url = (
+            file_data.get("file_url")
+            if hasattr(file_data, "get")
+            else getattr(file_data, "file_url", None)
         )
-    for comment in comments:
-        text = _plain_text(comment, "Text Editor")
-        if text:
-            content_parts.append(f"Comment: {text}")
+        if not file_url:
+            continue
+        ext = os.path.splitext(file_url)[1].lower()
+        if ext not in INDEXABLE_ATTACHMENT_EXTENSIONS:
+            continue
+        file_path = get_file_path(file_url)
+        if not file_path or not os.path.exists(file_path):
+            continue
+        try:
+            if os.path.getsize(file_path) > MAX_ATTACHMENT_FILE_BYTES:
+                continue
+        except OSError:
+            continue
+        try:
+            with decrypted_temp_file(file_url=file_url, path=file_path) as readable_path:
+                if ext in {".txt", ".md"}:
+                    with open(readable_path, "r", encoding="utf-8", errors="ignore") as handle:
+                        raw_text = handle.read(MAX_ATTACHMENT_CHARS - total_chars).strip()
+                    if raw_text:
+                        parts.append(raw_text)
+                        total_chars += len(raw_text)
+                elif ext == ".pdf":
+                    if pdfplumber_mod is None:
+                        import pdfplumber as pdfplumber_mod
+                    with pdfplumber_mod.open(readable_path) as pdf:
+                        for page in pdf.pages[:MAX_ATTACHMENT_PAGES]:
+                            if total_chars >= MAX_ATTACHMENT_CHARS:
+                                break
+                            text = (page.extract_text() or "").strip()
+                            if text:
+                                remaining = MAX_ATTACHMENT_CHARS - total_chars
+                                chunk = text[:remaining]
+                                parts.append(chunk)
+                                total_chars += len(chunk)
+        except Exception as exc:
+            frappe.log_error(
+                title="OCR Error",
+                message=f"Error extracting attachment text for {doc_type} {doc_name}: {exc}",
+            )
+    return "\n".join(part for part in parts if part)
+
+
+def get_indexable_content(
+    doc,
+    comments=None,
+    include_comments=True,
+    include_attachments=False,
+    excluded_fields=None,
+):
+    content_parts = [get_document_content(doc, excluded_fields=excluded_fields)]
+    if include_comments:
+        if comments is None:
+            comments = get_document_comments(doc.doctype, [doc.name]).get(
+                doc.name,
+                [],
+            )
+        for comment in comments:
+            text = _plain_text(comment, "Text Editor")
+            if text:
+                content_parts.append(f"Comment: {text}")
+    if include_attachments:
+        attachment_text = _extract_pdf_attachments_text(doc.doctype, doc.name)
+        if attachment_text:
+            content_parts.append(f"Attachment: {attachment_text}")
     return " ".join(part for part in content_parts if part)
 
 
@@ -174,6 +280,22 @@ def _comment_reference(doc):
     return doc_type, doc_name
 
 
+def _attachment_reference(doc):
+    if doc.doctype != "File":
+        return None
+    if doc.get("is_folder"):
+        return None
+    file_url = str(doc.get("file_url") or "")
+    ext = os.path.splitext(file_url)[1].lower()
+    if ext not in INDEXABLE_ATTACHMENT_EXTENSIONS:
+        return None
+    doc_type = doc.get("attached_to_doctype")
+    doc_name = doc.get("attached_to_name")
+    if not doc_type or not doc_name or doc_type in {"Document", "Document Version"}:
+        return None
+    return doc_type, doc_name
+
+
 def _enqueue_indexing(doc_type, doc_name, queue="short", timeout=300):
     frappe.enqueue(
         "document_management.search.indexer.run_indexing_background",
@@ -182,10 +304,12 @@ def _enqueue_indexing(doc_type, doc_name, queue="short", timeout=300):
         queue=queue,
         timeout=timeout,
         enqueue_after_commit=True,
+        job_id=f"dm_idx:{doc_type}:{doc_name}",
+        deduplicate=True,
     )
 
 
-INDEXING_CONFIG_CACHE_KEY = "document_management:indexing_config"
+INDEXING_CONFIG_CACHE_KEY = "document_management:indexing_config_v2"
 SKIPPED_INDEX_DOCTYPES = frozenset(
     {
         "Access Log",
@@ -213,8 +337,27 @@ SKIPPED_INDEX_DOCTYPES = frozenset(
 def clear_indexing_config_cache():
     try:
         frappe.cache().delete_value(INDEXING_CONFIG_CACHE_KEY)
+        frappe.cache().delete_value("document_management:indexing_config")
     except Exception:
         pass
+
+
+def _doctype_rules_from_settings(settings):
+    rules = {}
+    for row in settings.get("indexed_doctypes", []) or []:
+        doctype = getattr(row, "document_type", None)
+        if not doctype:
+            continue
+        raw_comments = getattr(row, "index_comments", None)
+        index_comments = True if raw_comments is None else bool(int(raw_comments))
+        index_attachments = bool(int(getattr(row, "index_attachments", 0) or 0))
+        excluded = sorted(_parse_excluded_fields(getattr(row, "excluded_fields", "")))
+        rules[doctype] = {
+            "index_comments": index_comments,
+            "index_attachments": index_attachments,
+            "excluded_fields": excluded,
+        }
+    return rules
 
 
 def _get_indexing_config():
@@ -222,11 +365,13 @@ def _get_indexing_config():
     if use_cache:
         try:
             cached = frappe.cache().get_value(INDEXING_CONFIG_CACHE_KEY)
-            if isinstance(cached, dict) and "indexed_doctypes" in cached:
+            if isinstance(cached, dict) and "doctype_rules" in cached:
+                rules = cached.get("doctype_rules") or {}
                 return (
                     bool(cached.get("enable_full_text_search")),
                     bool(cached.get("enable_semantic_search")),
-                    set(cached.get("indexed_doctypes") or ()),
+                    set(rules.keys()),
+                    rules,
                 )
         except Exception:
             pass
@@ -234,11 +379,7 @@ def _get_indexing_config():
     settings = frappe.get_single("Document Management Settings")
     full_text = bool(getattr(settings, "enable_full_text_search", False))
     semantic = bool(getattr(settings, "enable_semantic_search", False))
-    indexed = {
-        d.document_type
-        for d in (settings.get("indexed_doctypes", []) or [])
-        if getattr(d, "document_type", None)
-    }
+    rules = _doctype_rules_from_settings(settings)
     if use_cache:
         try:
             frappe.cache().set_value(
@@ -246,28 +387,43 @@ def _get_indexing_config():
                 {
                     "enable_full_text_search": full_text,
                     "enable_semantic_search": semantic,
-                    "indexed_doctypes": sorted(indexed),
+                    "doctype_rules": rules,
                 },
                 expires_in_sec=300,
             )
         except Exception:
             pass
-    return full_text, semantic, indexed
+    return full_text, semantic, set(rules.keys()), rules
 
 
 def handle_doc_save(doc, method=None):
     if doc.doctype in SKIPPED_INDEX_DOCTYPES:
         return
     try:
-        enable_full_text, enable_semantic, indexed_doctypes = _get_indexing_config()
+        enable_full_text, enable_semantic, indexed_doctypes, rules = _get_indexing_config()
     except Exception:
         return
 
     comment_reference = _comment_reference(doc)
     if comment_reference:
         doc_type, doc_name = comment_reference
-        if enable_full_text and doc_type in indexed_doctypes:
+        if (
+            enable_full_text
+            and doc_type in indexed_doctypes
+            and rules.get(doc_type, {}).get("index_comments", True)
+        ):
             _enqueue_indexing(doc_type, doc_name)
+        return
+
+    attachment_reference = _attachment_reference(doc)
+    if attachment_reference:
+        doc_type, doc_name = attachment_reference
+        if (
+            enable_full_text
+            and doc_type in indexed_doctypes
+            and rules.get(doc_type, {}).get("index_attachments", False)
+        ):
+            _enqueue_indexing(doc_type, doc_name, queue="long", timeout=600)
         return
 
     should_index_generic = (
@@ -285,24 +441,32 @@ def handle_doc_save(doc, method=None):
     # Enqueue the heavy embedding process (or soft-delete removal) so it doesn't block the UI
     _enqueue_indexing(doc.doctype, doc.name)
 
+
 def run_indexing_background(doc_type, doc_name):
     try:
-        settings = frappe.get_single('Document Management Settings')
+        settings = frappe.get_single("Document Management Settings")
         doc = frappe.get_doc(doc_type, doc_name)
     except Exception:
         return
-        
-    indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
+
+    rules = _doctype_rules_from_settings(settings)
     if doc_type == "Document" and doc.get("is_deleted"):
         semantic_backend.remove_document(doc_type, doc_name)
         return
-    content = get_indexable_content(doc)
+
+    rule = rules.get(doc_type, {})
+    content = get_indexable_content(
+        doc,
+        include_comments=rule.get("index_comments", True),
+        include_attachments=rule.get("index_attachments", False),
+        excluded_fields=rule.get("excluded_fields"),
+    )
     title = get_document_title(doc)
 
     if (
         settings.enable_full_text_search
         and doc_type != "Document"
-        and doc_type in indexed_doctypes
+        and doc_type in rules
     ):
         try:
             tantivy_backend.index_document(doc_type, doc_name, title, content)
@@ -317,25 +481,40 @@ def run_indexing_background(doc_type, doc_name):
             return
         except tantivy_backend.IndexRebuildRequired:
             return
-        except Exception as e:
-            frappe.log_error(title="Tantivy Indexing Error", message=str(e))
-            
+        except Exception as exc:
+            frappe.log_error(title="Tantivy Indexing Error", message=str(exc))
+
     if settings.enable_semantic_search and doc_type == "Document":
         try:
             semantic_backend.index_document(doc_type, doc_name, content)
-        except Exception as e:
-            frappe.log_error(title="Semantic Indexing Error", message=str(e))
+        except Exception as exc:
+            frappe.log_error(title="Semantic Indexing Error", message=str(exc))
+
 
 def handle_doc_trash(doc, method=None):
     if doc.doctype in SKIPPED_INDEX_DOCTYPES:
         return
     try:
-        enable_full_text, enable_semantic, indexed_doctypes = _get_indexing_config()
+        enable_full_text, enable_semantic, indexed_doctypes, rules = _get_indexing_config()
         comment_reference = _comment_reference(doc)
         if comment_reference:
             doc_type, doc_name = comment_reference
-            if enable_full_text and doc_type in indexed_doctypes:
+            if (
+                enable_full_text
+                and doc_type in indexed_doctypes
+                and rules.get(doc_type, {}).get("index_comments", True)
+            ):
                 _enqueue_indexing(doc_type, doc_name)
+            return
+        attachment_reference = _attachment_reference(doc)
+        if attachment_reference:
+            doc_type, doc_name = attachment_reference
+            if (
+                enable_full_text
+                and doc_type in indexed_doctypes
+                and rules.get(doc_type, {}).get("index_attachments", False)
+            ):
+                _enqueue_indexing(doc_type, doc_name, queue="long", timeout=600)
             return
         if (
             enable_full_text
@@ -359,9 +538,47 @@ def handle_doc_trash(doc, method=None):
                 timeout=600,
                 enqueue_after_commit=True,
             )
-            
     except Exception:
         pass
+
+
+def handle_doc_rename(doc, method=None, old_name=None, new_name=None, merge=False):
+    if doc.doctype in SKIPPED_INDEX_DOCTYPES:
+        return
+    try:
+        enable_full_text, enable_semantic, indexed_doctypes, _ = _get_indexing_config()
+    except Exception:
+        return
+
+    final_name = new_name or doc.name
+    if (
+        enable_full_text
+        and doc.doctype != "Document"
+        and doc.doctype in indexed_doctypes
+    ):
+        if old_name and old_name != final_name:
+            frappe.enqueue(
+                "document_management.search.indexer.remove_from_index_background",
+                doc_type=doc.doctype,
+                doc_name=old_name,
+                queue="short",
+                timeout=300,
+                enqueue_after_commit=True,
+            )
+        if final_name:
+            _enqueue_indexing(doc.doctype, final_name)
+    elif enable_semantic and doc.doctype == "Document":
+        if old_name and old_name != final_name:
+            frappe.enqueue(
+                "document_management.search.indexer.remove_from_rag_background",
+                doc_type="Document",
+                doc_name=old_name,
+                queue="long",
+                timeout=600,
+                enqueue_after_commit=True,
+            )
+        if final_name:
+            _enqueue_indexing("Document", final_name)
 
 
 def remove_from_index_background(doc_type, doc_name):
@@ -402,6 +619,31 @@ def _parse_doctypes(doctypes):
     return {str(value).strip() for value in doctypes if str(value).strip()}
 
 
+def _normalize_date_param(raw):
+    value = str(raw or "").strip()[:10]
+    if not value:
+        return None
+    try:
+        from frappe.utils import getdate
+
+        return getdate(value).isoformat()
+    except Exception:
+        return None
+
+
+def _matches_date_range(modified_value, date_from, date_to):
+    if not date_from and not date_to:
+        return True
+    date_part = str(modified_value or "")[:10]
+    if len(date_part) != 10:
+        return False
+    if date_from and date_part < date_from:
+        return False
+    if date_to and date_part > date_to:
+        return False
+    return True
+
+
 def _record_result(hit, metadata):
     return {
         "source": "full_text",
@@ -410,6 +652,7 @@ def _record_result(hit, metadata):
         "title": hit.get("title") or hit["doc_name"],
         "excerpt": hit.get("excerpt") or "",
         "score": float(hit.get("score") or 0),
+        "quality": int(hit.get("quality") or 0),
         "match_type": hit.get("match_type") or "partial",
         "matched_terms": int(hit.get("matched_terms") or 0),
         "total_terms": int(hit.get("total_terms") or 0),
@@ -422,7 +665,7 @@ def _record_result(hit, metadata):
     }
 
 
-def _permitted_metadata(hits):
+def _permitted_metadata(hits, date_from=None, date_to=None):
     by_doctype = {}
     for hit in hits:
         by_doctype.setdefault(hit["doc_type"], []).append(hit["doc_name"])
@@ -430,10 +673,20 @@ def _permitted_metadata(hits):
     permitted = {}
     custom_permission_hooks = frappe.get_hooks("has_permission") or {}
     for doctype, names in by_doctype.items():
+        list_filters = {"name": ["in", list(dict.fromkeys(names))]}
+        if date_from and date_to:
+            list_filters["modified"] = [
+                "between",
+                [f"{date_from} 00:00:00", f"{date_to} 23:59:59"],
+            ]
+        elif date_from:
+            list_filters["modified"] = [">=", f"{date_from} 00:00:00"]
+        elif date_to:
+            list_filters["modified"] = ["<=", f"{date_to} 23:59:59"]
         try:
             rows = frappe.get_list(
                 doctype,
-                filters={"name": ["in", list(dict.fromkeys(names))]},
+                filters=list_filters,
                 fields=["name", "modified"],
                 limit_page_length=len(names),
             )
@@ -457,12 +710,49 @@ def _permitted_metadata(hits):
     return permitted
 
 
+def _sort_records(records, sort_by):
+    if sort_by == "modified_desc":
+        return sorted(records, key=lambda r: r.get("modified") or "", reverse=True)
+    if sort_by == "modified_asc":
+        return sorted(records, key=lambda r: r.get("modified") or "")
+    if sort_by == "title_asc":
+        return sorted(
+            records,
+            key=lambda r: (
+                str(r.get("title") or "").lower(),
+                str(r.get("doc_name") or "").lower(),
+            ),
+        )
+    return records
+
+
 @frappe.whitelist()
-def search(query, page=1, page_length=25, doctypes=None, limit=None):
+def search(
+    query,
+    page=1,
+    page_length=25,
+    doctypes=None,
+    limit=None,
+    sort_by="relevance",
+    date_from=None,
+    date_to=None,
+):
     query = (query or "").strip()
+    sort_by = str(sort_by or "relevance").strip()
+    if sort_by not in ALLOWED_SORT_MODES:
+        sort_by = "relevance"
+    date_from = _normalize_date_param(date_from)
+    date_to = _normalize_date_param(date_to)
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+
     if not query:
         return {
             "exact": [],
+            "facets": {},
+            "sort_by": sort_by,
+            "date_from": date_from,
+            "date_to": date_to,
             "pagination": {
                 "page": 1,
                 "page_length": 25,
@@ -481,19 +771,34 @@ def search(query, page=1, page_length=25, doctypes=None, limit=None):
     except (TypeError, ValueError):
         page_length = 25
 
-    settings = frappe.get_single('Document Management Settings')
+    settings = frappe.get_single("Document Management Settings")
     configured = {
         row.document_type
         for row in settings.get("indexed_doctypes", [])
-        if row.document_type
+        if row.document_type and row.document_type != "Document"
     }
     requested = _parse_doctypes(doctypes)
     generic_filter = (requested & configured) if requested else configured
+
+    parsed_syntax = parse_search_syntax(query)
+    highlight_source = (
+        f'{parsed_syntax["positive_text"]} {" ".join(parsed_syntax["phrases"])}'.strip()
+        if (parsed_syntax["phrases"] or parsed_syntax["excluded"])
+        else query
+    )
+    terms = significant_terms(highlight_source)
+
     results = {
         "exact": [],
+        "facets": {},
+        "facets_truncated": False,
+        "fuzzy_fallback": False,
         "configured_doctypes": sorted(configured),
         "search_language": current_search_language(),
-        "terms": significant_terms(query),
+        "terms": terms,
+        "sort_by": sort_by,
+        "date_from": date_from,
+        "date_to": date_to,
         "pagination": {
             "page": page,
             "page_length": page_length,
@@ -507,39 +812,90 @@ def search(query, page=1, page_length=25, doctypes=None, limit=None):
     if settings.enable_full_text_search:
         try:
             target_start = (page - 1) * page_length
-            authorized_seen = 0
-            page_results = []
-            for batch in tantivy_backend.iter_search(
-                query,
-                doctypes=sorted(generic_filter),
-                batch_size=max(page_length * 4, 100),
-            ):
-                filtered = [
-                    hit
-                    for hit in batch
-                    if hit["doc_type"] != "Document"
-                    and hit["doc_type"] in generic_filter
-                ]
-                permitted = _permitted_metadata(filtered)
-                for hit in filtered:
-                    key = (hit["doc_type"], hit["doc_name"])
-                    if key not in permitted:
-                        continue
-                    if authorized_seen < target_start:
-                        authorized_seen += 1
-                        continue
-                    page_results.append(
-                        _record_result(hit, permitted[key])
+            facets = {}
+            facets_truncated = False
+            if sort_by == "relevance":
+                authorized_seen = 0
+                page_results = []
+                for batch in tantivy_backend.iter_search(
+                    query,
+                    doctypes=sorted(generic_filter),
+                    batch_size=max(page_length * 4, 100),
+                ):
+                    filtered = [
+                        hit
+                        for hit in batch
+                        if hit["doc_type"] != "Document"
+                        and hit["doc_type"] in generic_filter
+                    ]
+                    permitted = _permitted_metadata(
+                        filtered,
+                        date_from=date_from,
+                        date_to=date_to,
                     )
-                    authorized_seen += 1
+                    for hit in filtered:
+                        key = (hit["doc_type"], hit["doc_name"])
+                        if key not in permitted:
+                            continue
+                        meta = permitted[key]
+                        if not _matches_date_range(meta.get("modified"), date_from, date_to):
+                            continue
+                        facets[hit["doc_type"]] = facets.get(hit["doc_type"], 0) + 1
+                        if authorized_seen < target_start:
+                            authorized_seen += 1
+                            continue
+                        if len(page_results) <= page_length:
+                            page_results.append(_record_result(hit, meta))
+                        authorized_seen += 1
                     if len(page_results) > page_length:
+                        facets_truncated = True
                         break
-                if len(page_results) > page_length:
-                    break
-            results["pagination"]["has_more"] = (
-                len(page_results) > page_length
+                results["pagination"]["has_more"] = len(page_results) > page_length
+                results["exact"] = page_results[:page_length]
+            else:
+                collected = []
+                max_collect = max(target_start + page_length + 1, 2500)
+                for batch in tantivy_backend.iter_search(
+                    query,
+                    doctypes=sorted(generic_filter),
+                    batch_size=max(page_length * 4, 250),
+                ):
+                    filtered = [
+                        hit
+                        for hit in batch
+                        if hit["doc_type"] != "Document"
+                        and hit["doc_type"] in generic_filter
+                    ]
+                    permitted = _permitted_metadata(
+                        filtered,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    for hit in filtered:
+                        key = (hit["doc_type"], hit["doc_name"])
+                        if key not in permitted:
+                            continue
+                        meta = permitted[key]
+                        if not _matches_date_range(meta.get("modified"), date_from, date_to):
+                            continue
+                        facets[hit["doc_type"]] = facets.get(hit["doc_type"], 0) + 1
+                        collected.append(_record_result(hit, meta))
+                        if len(collected) >= max_collect:
+                            facets_truncated = True
+                            break
+                    if len(collected) >= max_collect:
+                        break
+                ordered = _sort_records(collected, sort_by)
+                page_slice = ordered[target_start : target_start + page_length + 1]
+                results["pagination"]["has_more"] = len(page_slice) > page_length
+                results["exact"] = page_slice[:page_length]
+
+            results["facets"] = facets
+            results["facets_truncated"] = facets_truncated
+            results["fuzzy_fallback"] = bool(
+                results["exact"]
+                and all(row.get("match_type") == "fuzzy" for row in results["exact"])
             )
-            results["exact"] = page_results[:page_length]
             results["pagination"]["from"] = (
                 target_start + 1 if results["exact"] else 0
             )
@@ -554,7 +910,7 @@ def search(query, page=1, page_length=25, doctypes=None, limit=None):
                 title="Full Text Search Error",
                 message=frappe.get_traceback(),
             )
-            results['exact_error'] = "Full-text search is temporarily unavailable."
+            results["exact_error"] = "Full-text search is temporarily unavailable."
 
     return results
 
@@ -565,7 +921,7 @@ def get_search_options():
     options_dict = {}
     for row in settings.get("indexed_doctypes", []):
         doctype = row.document_type
-        if not doctype:
+        if not doctype or doctype == "Document":
             continue
         try:
             if frappe.has_permission(doctype, "read"):
@@ -592,6 +948,25 @@ def get_search_options():
     }
 
 
+@frappe.whitelist()
+def get_index_status():
+    if "System Manager" not in (frappe.get_roles() or []):
+        frappe.throw("System Manager role is required.", frappe.PermissionError)
+    settings = frappe.get_single("Document Management Settings")
+    configured = sorted(
+        {
+            row.document_type
+            for row in (settings.get("indexed_doctypes", []) or [])
+            if row.document_type and row.document_type != "Document"
+        }
+    )
+    stats = tantivy_backend.get_index_stats(configured)
+    return {
+        "full_text_enabled": bool(settings.enable_full_text_search),
+        "configured_doctypes": configured,
+        **stats,
+    }
+
 
 @frappe.whitelist()
 def enqueue_rebuild_index():
@@ -604,19 +979,23 @@ def enqueue_rebuild_index():
     )
     return {"job_id": getattr(job, "id", None)}
 
+
 @frappe.whitelist()
 def rebuild_index():
     frappe.has_permission("Document Management Settings", "write", throw=True)
-    settings = frappe.get_single('Document Management Settings')
-    indexed_doctypes = [d.document_type for d in settings.get("indexed_doctypes", [])]
+    settings = frappe.get_single("Document Management Settings")
+    rules = _doctype_rules_from_settings(settings)
+    indexed_doctypes = [dt for dt in rules if dt != "Document"]
 
     if not indexed_doctypes and not settings.enable_semantic_search:
         return {"status": "error", "message": "No doctypes configured for indexing"}
 
     def records():
         for dt in indexed_doctypes:
-            if dt == "Document":
-                continue
+            rule = rules.get(dt, {})
+            include_comments = rule.get("index_comments", True)
+            include_attachments = rule.get("index_attachments", False)
+            excluded_fields = rule.get("excluded_fields")
             batch_size = 1000
             offset = 0
             while True:
@@ -629,9 +1008,10 @@ def rebuild_index():
                 )
                 if not docs:
                     break
-                comments = get_document_comments(
-                    dt,
-                    [row.name for row in docs],
+                comments = (
+                    get_document_comments(dt, [row.name for row in docs])
+                    if include_comments
+                    else {}
                 )
                 for row in docs:
                     try:
@@ -643,6 +1023,9 @@ def rebuild_index():
                             "content": get_indexable_content(
                                 doc,
                                 comments=comments.get(row.name, []),
+                                include_comments=include_comments,
+                                include_attachments=include_attachments,
+                                excluded_fields=excluded_fields,
                             ),
                         }
                     except Exception:
@@ -666,12 +1049,27 @@ def rebuild_index():
 
         rag_result = rebuild_rag()
 
+    try:
+        frappe.publish_realtime(
+            INDEX_REBUILT_EVENT,
+            {
+                "count": total_indexed,
+                "generation": generic_result.get("generation") if generic_result else None,
+                "rebuilt_at": generic_result.get("rebuilt_at") if generic_result else None,
+            },
+            after_commit=True,
+        )
+    except Exception:
+        pass
+
     return {
         "status": "success",
         "message": f"Rebuilt index for {total_indexed} documents.",
         "generation": generic_result.get("generation") if generic_result else None,
+        "rebuilt_at": generic_result.get("rebuilt_at") if generic_result else None,
         "rag": rag_result,
     }
+
 
 @frappe.whitelist()
 def extract_and_index_ocr(doc_type, doc_name):
@@ -684,53 +1082,23 @@ def extract_and_index_ocr(doc_type, doc_name):
 
         return reprocess_ocr(doc_name)
 
-    # Fetch attachments for this document
-    files = frappe.get_all("File", filters={
-        "attached_to_doctype": doc_type,
-        "attached_to_name": doc_name,
-        "is_folder": 0
-    }, fields=["file_url", "name"])
-    
-    extracted_text = ""
-    
-    if files:
-        import pdfplumber
-        from frappe.utils.file_manager import get_file_path
-        from document_management.frappe_document_management.utils.file_crypto import (
-            decrypted_temp_file,
-        )
-
-        for file_data in files:
-            if not file_data.file_url:
-                continue
-            file_path = get_file_path(file_data.file_url)
-            if file_path and file_path.lower().endswith(".pdf") and os.path.exists(file_path):
-                try:
-                    with decrypted_temp_file(file_url=file_data.file_url, path=file_path) as readable_path:
-                        with pdfplumber.open(readable_path) as pdf:
-                            for page in pdf.pages:
-                                text = page.extract_text()
-                                if text:
-                                    extracted_text += text + "\n"
-                except Exception as e:
-                    frappe.log_error(title="OCR Error", message=f"Error extracting PDF text: {e}")
-
-    # Combine extracted text with the standard document fields
-    base_content = get_indexable_content(doc)
+    extracted_text = _extract_pdf_attachments_text(doc_type, doc_name)
+    settings = frappe.get_single("Document Management Settings")
+    rules = _doctype_rules_from_settings(settings)
+    rule = rules.get(doc_type, {})
+    base_content = get_indexable_content(
+        doc,
+        include_comments=rule.get("index_comments", True),
+        include_attachments=False,
+        excluded_fields=rule.get("excluded_fields"),
+    )
     full_content = f"{base_content}\n\n--- OCR TEXT ---\n{extracted_text}"
-    
+
     title = get_document_title(doc)
-    settings = frappe.get_single('Document Management Settings')
-    indexed_doctypes = {
-        row.document_type
-        for row in settings.get("indexed_doctypes", [])
-        if row.document_type
-    }
-    
     if (
         settings.enable_full_text_search
         and doc_type != "Document"
-        and doc_type in indexed_doctypes
+        and doc_type in rules
     ):
         try:
             tantivy_backend.index_document(
@@ -753,5 +1121,5 @@ def extract_and_index_ocr(doc_type, doc_name):
                     "can be indexed."
                 )
             )
-        
+
     return {"status": "success", "extracted_chars": len(extracted_text)}

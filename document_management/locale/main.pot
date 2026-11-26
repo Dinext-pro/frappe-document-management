@@ -2286,3 +2286,135 @@ msgstr ""
 
 msgid "File (Drag & Drop)"
 msgstr ""
+
+msgid "Search indexed operational records. Supports \"exact phrases\", -exclusions, prefixes, and typo tolerance."
+msgstr ""
+
+msgid "Search customers, invoices, loans, or \"exact phrase\" -exclude..."
+msgstr ""
+
+msgid "Clear search (Esc)"
+msgstr ""
+
+msgid "Relevance"
+msgstr ""
+
+msgid "Most recent"
+msgstr ""
+
+msgid "Oldest"
+msgstr ""
+
+msgid "Title A-Z"
+msgstr ""
+
+msgid "From"
+msgstr ""
+
+msgid "To"
+msgstr ""
+
+msgid "Per page"
+msgstr ""
+
+msgid "Reset filters"
+msgstr ""
+
+msgid "Enter a query to search the configured indexes."
+msgstr ""
+
+msgid "Tip: Press / to focus, Up/Down to navigate results, Enter to open, Esc to clear."
+msgstr ""
+
+msgid "Index Status"
+msgstr ""
+
+msgid "Indexed DocTypes Search Status"
+msgstr ""
+
+msgid "Indexed DocTypes Search index rebuilt"
+msgstr ""
+
+msgid "Ready"
+msgstr ""
+
+msgid "Rebuild Required"
+msgstr ""
+
+msgid "Total Indexed"
+msgstr ""
+
+msgid "Last Rebuilt"
+msgstr ""
+
+msgid "Generation"
+msgstr ""
+
+msgid "DocType"
+msgstr ""
+
+msgid "No DocTypes configured for indexing."
+msgstr ""
+
+msgid "Rebuild Index Now"
+msgstr ""
+
+msgid "Recent:"
+msgstr ""
+
+msgid "Clear history"
+msgstr ""
+
+msgid "Similar match"
+msgstr ""
+
+msgid "Modified"
+msgstr ""
+
+msgid "Index Comments"
+msgstr ""
+
+msgid "Index PDF Attachments"
+msgstr ""
+
+msgid "Excluded Fields"
+msgstr ""
+
+msgid "Search Syntax & Shortcuts"
+msgstr ""
+
+msgid "Match an exact phrase across title, ID, content, or comments"
+msgstr ""
+
+msgid "Exclude records containing a specific term"
+msgstr ""
+
+msgid "Prefix matching on record IDs and titles"
+msgstr ""
+
+msgid "Automatic typo-tolerant fallback when no exact matches exist"
+msgstr ""
+
+msgid "Keyboard shortcuts"
+msgstr ""
+
+msgid "focus search"
+msgstr ""
+
+msgid "navigate results"
+msgstr ""
+
+msgid "open record"
+msgstr ""
+
+msgid "open in new tab"
+msgstr ""
+
+msgid "clear search"
+msgstr ""
+
+msgid "No exact matches found. Showing similar results."
+msgstr ""
+
+msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
+msgstr ""

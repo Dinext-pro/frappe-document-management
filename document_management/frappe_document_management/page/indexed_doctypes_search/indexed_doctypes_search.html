@@ -1,26 +1,67 @@
 <div class="indexed-doctypes-search">
     <section class="search-hero">
-        <div>
-            <h3>Indexed DocTypes Search</h3>
-            <p>Search indexed operational records.</p>
+        <div class="search-hero-head">
+            <div>
+                <h3>{{ __("Indexed DocTypes Search") }}</h3>
+                <p>{{ __("Search indexed operational records. Supports \"exact phrases\", -exclusions, prefixes, and typo tolerance.") }}</p>
+            </div>
         </div>
         <div class="search-controls">
             <div class="search-input-wrap">
                 <i class="fa fa-search"></i>
                 <input id="indexed-doctypes-search-input" type="search"
-                    placeholder="Search customers, loans, transactions...">
-                <button class="btn btn-primary" id="indexed-doctypes-search-button">
-                    Search
+                    autocomplete="off"
+                    placeholder="{{ __('Search customers, invoices, loans, or \"exact phrase\" -exclude...') }}">
+                <button type="button" class="search-clear-btn hidden" id="indexed-doctypes-search-clear" title="{{ __('Clear search (Esc)') }}">
+                    <i class="fa fa-times"></i>
+                </button>
+                <button type="button" class="search-help-btn" id="indexed-doctypes-search-help" title="{{ __('Search Syntax & Shortcuts') }}">
+                    <i class="fa fa-question-circle"></i>
+                </button>
+                <button type="button" class="btn btn-primary" id="indexed-doctypes-search-button">
+                    {{ __("Search") }}
+                </button>
+            </div>
+            <div class="search-toolbar">
+                <div class="search-toolbar-group">
+                    <label for="indexed-doctypes-search-sort">{{ __("Sort") }}</label>
+                    <select id="indexed-doctypes-search-sort" class="form-control input-xs">
+                        <option value="relevance">{{ __("Relevance") }}</option>
+                        <option value="modified_desc">{{ __("Most recent") }}</option>
+                        <option value="modified_asc">{{ __("Oldest") }}</option>
+                        <option value="title_asc">{{ __("Title A-Z") }}</option>
+                    </select>
+                </div>
+                <div class="search-toolbar-group">
+                    <label for="indexed-doctypes-search-from">{{ __("From") }}</label>
+                    <input id="indexed-doctypes-search-from" type="date" class="form-control input-xs">
+                </div>
+                <div class="search-toolbar-group">
+                    <label for="indexed-doctypes-search-to">{{ __("To") }}</label>
+                    <input id="indexed-doctypes-search-to" type="date" class="form-control input-xs">
+                </div>
+                <div class="search-toolbar-group">
+                    <label for="indexed-doctypes-search-limit">{{ __("Per page") }}</label>
+                    <select id="indexed-doctypes-search-limit" class="form-control input-xs">
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <button type="button" class="btn btn-default btn-xs hidden" id="indexed-doctypes-reset-filters">
+                    <i class="fa fa-undo"></i> {{ __("Reset filters") }}
                 </button>
             </div>
             <div id="indexed-doctypes-search-types" class="search-types"></div>
+            <div id="indexed-doctypes-recent-searches" class="recent-searches hidden"></div>
         </div>
     </section>
     <div id="indexed-doctypes-search-status" class="search-status"></div>
     <main id="indexed-doctypes-search-results" class="search-results">
         <div class="search-empty">
             <i class="fa fa-search"></i>
-            <strong>Enter a query to search the configured indexes.</strong>
+            <strong>{{ __("Enter a query to search the configured indexes.") }}</strong>
+            <span class="search-shortcuts-hint">{{ __("Tip: Press / to focus, Up/Down to navigate results, Enter to open, Esc to clear.") }}</span>
         </div>
     </main>
 </div>

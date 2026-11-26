@@ -1290,3 +1290,363 @@ class TestPhase10To12Improvements(TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn('fields=["count(', console_py)
         self.assertIn('{"COUNT": "*", "as": "total"}', console_py)
+
+
+class TestIndexedDocTypesSearchUpgrades(TestCase):
+    def test_parse_search_syntax_phrases_exclusions_and_hyphenated_ids(self):
+        query_mod = importlib.import_module("document_management.search.query")
+
+        parsed = query_mod.parse_search_syntax(
+            '"Juan Pérez" INV-2026-001 -cancelado -borrador'
+        )
+        self.assertEqual(parsed["phrases"], ["juan pérez"])
+        self.assertEqual(parsed["excluded"], ["cancelado", "borrador"])
+        self.assertIn("INV-2026-001", parsed["positive_text"])
+        self.assertNotIn("cancelado", parsed["positive_text"])
+
+    def test_build_natural_query_supports_phrases_exclusions_prefix_and_fuzzy(self):
+        query_mod = importlib.import_module("document_management.search.query")
+
+        class FakeQuery:
+            @staticmethod
+            def empty_query():
+                return ("empty",)
+
+            @staticmethod
+            def boost_query(q, w):
+                return ("boost", q, w)
+
+            @staticmethod
+            def boolean_query(clauses):
+                return ("boolean", clauses)
+
+            @staticmethod
+            def regex_query(schema, field, pattern):
+                return ("regex", field, pattern)
+
+            @staticmethod
+            def fuzzy_term_query(schema, field, term, distance=1, transposition_cost_one=True, prefix=False):
+                return ("fuzzy", field, term, distance)
+
+        fake_tantivy = SimpleNamespace(
+            Query=FakeQuery,
+            Occur=SimpleNamespace(Must="must", Should="should", MustNot="must_not"),
+        )
+
+        class FakeIndex:
+            schema = "fake-schema"
+
+            def parse_query(self, q, fields):
+                return ("parsed", q, tuple(fields))
+
+        with patch.dict(sys.modules, {"tantivy": fake_tantivy}):
+            q = query_mod.build_natural_query(
+                FakeIndex(),
+                '"Juan Pérez" contrato -anulado',
+                {"doc_name": 6.0, "title": 4.0, "content": 1.0},
+                language="es",
+                require_all=True,
+                allow_prefix=True,
+            )
+            rep = repr(q)
+            self.assertIn("must_not", rep)
+            self.assertIn('"anulado"', rep)
+            self.assertIn('"juan pérez"', rep)
+            self.assertIn("'regex', 'doc_name'", rep)
+
+            fq = query_mod.build_natural_query(
+                FakeIndex(),
+                "fatura",
+                {"title": 4.0, "content": 1.0},
+                language="es",
+                require_all=False,
+                allow_prefix=False,
+                fuzzy=True,
+            )
+            self.assertIn("'fuzzy', 'title', 'fatura', 1", repr(fq))
+
+    def test_tantivy_backend_quality_rerank_cache_and_stats(self):
+        tb = importlib.import_module("document_management.search.tantivy_backend")
+
+        ranked = tb._rank_batch(
+            [
+                {"doc_name": "TASK-LONG", "quality": 30, "coverage": 1.0, "score": 25.0},
+                {"doc_name": "TASK-EXACT", "quality": 90, "coverage": 1.0, "score": 2.0},
+            ]
+        )
+        self.assertEqual([r["doc_name"] for r in ranked], ["TASK-EXACT", "TASK-LONG"])
+
+        # Handle cache reuses opened Index for same active path
+        open_calls = []
+
+        class FakeTantivy:
+            class Index:
+                @staticmethod
+                def open(path):
+                    open_calls.append(path)
+                    return SimpleNamespace(
+                        path=path,
+                        reload=lambda: None,
+                        searcher=lambda: SimpleNamespace(
+                            num_docs=12,
+                            search=lambda q, limit, count=True: SimpleNamespace(count=5),
+                        ),
+                        parse_query=lambda q, fields: (q, fields),
+                    )
+
+        tb.clear_index_cache()
+        try:
+            with (
+                patch.dict(sys.modules, {"tantivy": FakeTantivy}),
+                patch.object(tb, "get_tantivy_index_path", return_value="/tmp/gen-1/tantivy"),
+                patch.object(tb, "_read_pointer", return_value={"generation": "gen-1", "rebuilt_at": "2026-11-26 07:00:00"}),
+                patch.object(tb, "_active_generation_name", return_value="gen-1"),
+                patch.object(tb, "index_exists", return_value=True),
+            ):
+                idx1 = tb.get_index()
+                idx2 = tb.get_index()
+                self.assertIs(idx1, idx2)
+                self.assertEqual(len(open_calls), 1)
+
+                stats = tb.get_index_stats(["Customer", "Task"])
+                self.assertTrue(stats["ready"])
+                self.assertEqual(stats["num_docs"], 12)
+                self.assertEqual(stats["by_doctype"], {"Customer": 5, "Task": 5})
+                self.assertEqual(stats["rebuilt_at"], "2026-11-26 07:00:00")
+        finally:
+            tb.clear_index_cache()
+
+    def test_indexer_excluded_fields_attachments_dedup_dates_and_sorting(self):
+        import frappe
+
+        idx_mod = importlib.import_module("document_management.search.indexer")
+        fields = [
+            SimpleNamespace(fieldname="customer", fieldtype="Data", label="Customer", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="internal_note", fieldtype="Data", label="Internal Note", hidden=0, permlevel=0),
+        ]
+        doc = frappe._dict(customer="Acme", internal_note="Do not index")
+        doc.meta = SimpleNamespace(fields=fields)
+
+        content = idx_mod.get_document_content(doc, excluded_fields="internal_note")
+        self.assertIn("Customer: Acme", content)
+        self.assertNotIn("Do not index", content)
+
+        # Attachment reference detection
+        pdf_file = frappe._dict(
+            doctype="File",
+            is_folder=0,
+            file_url="/private/files/invoice.pdf",
+            attached_to_doctype="Sales Invoice",
+            attached_to_name="SINV-001",
+        )
+        self.assertEqual(idx_mod._attachment_reference(pdf_file), ("Sales Invoice", "SINV-001"))
+        img_file = frappe._dict(**{**pdf_file, "file_url": "/private/files/logo.png"})
+        self.assertIsNone(idx_mod._attachment_reference(img_file))
+
+        # Enqueue deduplication
+        with patch.object(frappe, "enqueue") as mock_enq:
+            idx_mod._enqueue_indexing("Task", "TASK-9")
+        _, kwargs = mock_enq.call_args
+        self.assertEqual(kwargs["job_id"], "dm_idx:Task:TASK-9")
+        self.assertTrue(kwargs["deduplicate"])
+
+        # Date filtering & sorting
+        self.assertTrue(idx_mod._matches_date_range("2026-06-15 10:00:00", "2026-06-01", "2026-06-30"))
+        self.assertFalse(idx_mod._matches_date_range("2026-05-31 23:59:59", "2026-06-01", "2026-06-30"))
+        records = [
+            {"title": "Beta", "doc_name": "2", "modified": "2026-01-01 00:00:00"},
+            {"title": "Alpha", "doc_name": "1", "modified": "2026-06-01 00:00:00"},
+        ]
+        self.assertEqual([r["title"] for r in idx_mod._sort_records(records, "modified_desc")], ["Alpha", "Beta"])
+        self.assertEqual([r["title"] for r in idx_mod._sort_records(records, "modified_asc")], ["Beta", "Alpha"])
+        self.assertEqual([r["title"] for r in idx_mod._sort_records(records, "title_asc")], ["Alpha", "Beta"])
+
+    def test_indexed_search_ui_i18n_and_doctype_schema(self):
+        import json
+
+        dt = json.loads(
+            (
+                REPO_ROOT
+                / "document_management"
+                / "frappe_document_management"
+                / "doctype"
+                / "indexed_doctype"
+                / "indexed_doctype.json"
+            ).read_text(encoding="utf-8")
+        )
+        names = {f["fieldname"] for f in dt["fields"]}
+        self.assertTrue({"document_type", "index_comments", "index_attachments", "excluded_fields"}.issubset(names))
+
+        html = (
+            REPO_ROOT
+            / "document_management"
+            / "frappe_document_management"
+            / "page"
+            / "indexed_doctypes_search"
+            / "indexed_doctypes_search.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('{{ __("Indexed DocTypes Search") }}', html)
+        self.assertIn('id="indexed-doctypes-search-sort"', html)
+        self.assertIn('id="indexed-doctypes-recent-searches"', html)
+
+        js = (
+            REPO_ROOT
+            / "document_management"
+            / "frappe_document_management"
+            / "page"
+            / "indexed_doctypes_search"
+            / "indexed_doctypes_search.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("allowedOptionValues", js)
+        self.assertIn("get_index_status", js)
+        self.assertIn("Rebuild Index Now", js)
+        self.assertIn("RECENT_SEARCHES_KEY", js)
+
+
+class TestIndexedDocTypesSearchPhaseDF(TestCase):
+    def test_exclusions_do_not_penalize_match_details_excerpt_or_trigger_relaxed_scan(self):
+        query_mod = importlib.import_module("document_management.search.query")
+        tb = importlib.import_module("document_management.search.tantivy_backend")
+
+        details = query_mod.search_match_details(
+            "factura -cancelado",
+            doc_name="SINV-001",
+            title="Factura mensual",
+            content="Pago aprobado sin problemas",
+            language="es",
+        )
+        self.assertEqual(details["total_terms"], 1)
+        self.assertEqual(details["matched_terms"], 1)
+        self.assertEqual(details["coverage"], 1.0)
+        self.assertEqual(details["match_type"], "all_terms")
+
+        # Excerpt centers on positive term 'factura', not excluded 'cancelado'
+        long_text = ("cancelado " * 60) + "factura importante aqui" + (" relleno" * 60)
+        excerpt = query_mod.make_excerpt(long_text, "factura -cancelado", maximum=100, language="es")
+        self.assertIn("factura importante", excerpt)
+
+        # iter_search sees only 1 positive term for 'factura -cancelado' -> skips relaxed scan
+        search_calls = []
+
+        class FakeSearcher:
+            def search(self, query, limit, count=True, offset=0):
+                search_calls.append(query)
+                return SimpleNamespace(hits=[], count=0)
+
+        fake_idx = SimpleNamespace(reload=lambda: None, searcher=lambda: FakeSearcher())
+        with (
+            patch.object(tb, "get_index", return_value=fake_idx),
+            patch.object(
+                tb,
+                "build_natural_query",
+                side_effect=lambda index, q, fields, require_all=True: (
+                    "strict" if require_all else "relaxed"
+                ),
+            ),
+        ):
+            list(tb.iter_search("factura -cancelado"))
+        self.assertEqual(search_calls, ["strict"])
+
+    def test_handle_doc_rename_removes_old_and_reindexes_new(self):
+        import frappe
+
+        idx_mod = importlib.import_module("document_management.search.indexer")
+        hooks_text = (REPO_ROOT / "document_management" / "hooks.py").read_text(encoding="utf-8")
+        self.assertIn('"after_rename": "document_management.search.indexer.handle_doc_rename"', hooks_text)
+
+        doc = frappe._dict(doctype="Customer", name="CUS-NEW")
+        queued = []
+        with (
+            patch.object(
+                idx_mod,
+                "_get_indexing_config",
+                return_value=(True, False, {"Customer"}, {"Customer": {}}),
+            ),
+            patch.object(
+                frappe,
+                "enqueue",
+                side_effect=lambda method, **kw: queued.append((method, kw)),
+            ),
+        ):
+            idx_mod.handle_doc_rename(doc, old_name="CUS-OLD", new_name="CUS-NEW")
+
+        self.assertEqual(len(queued), 2)
+        self.assertTrue(queued[0][0].endswith("remove_from_index_background"))
+        self.assertEqual(queued[0][1]["doc_name"], "CUS-OLD")
+        self.assertTrue(queued[1][0].endswith("run_indexing_background"))
+        self.assertEqual(queued[1][1]["doc_name"], "CUS-NEW")
+
+    def test_attachment_extraction_supports_txt_md_and_respects_char_limit(self):
+        import frappe
+
+        idx_mod = importlib.import_module("document_management.search.indexer")
+        with tempfile.TemporaryDirectory() as tmp:
+            txt_path = Path(tmp) / "notes.txt"
+            txt_path.write_text("X" * 200, encoding="utf-8")
+            with (
+                patch.object(
+                    frappe,
+                    "get_all",
+                    return_value=[frappe._dict(file_url=str(txt_path), name="F1")],
+                ),
+                patch.object(
+                    sys.modules["frappe.utils.file_manager"],
+                    "get_file_path",
+                    side_effect=lambda u: u,
+                ),
+                patch.object(idx_mod, "MAX_ATTACHMENT_CHARS", 50),
+            ):
+                extracted = idx_mod._extract_pdf_attachments_text("Task", "TASK-1")
+            self.assertEqual(len(extracted), 50)
+            self.assertEqual(extracted, "X" * 50)
+
+    def test_settings_validates_excluded_fields_against_doctype_meta(self):
+        import frappe
+
+        settings_mod = importlib.import_module(
+            "document_management.frappe_document_management.doctype."
+            "document_management_settings.document_management_settings"
+        )
+
+        class FakeSettings(settings_mod.DocumentManagementSettings):
+            def __init__(self, rows):
+                self._rows = rows
+
+            def get(self, key, default=None):
+                return self._rows if key == "indexed_doctypes" else default
+
+        fake_meta = SimpleNamespace(
+            istable=0,
+            issingle=0,
+            fields=[
+                SimpleNamespace(fieldname="customer_name", fieldtype="Data"),
+                SimpleNamespace(fieldname="notes", fieldtype="Text"),
+            ],
+        )
+        frappe.bold = lambda s: str(s)
+        with patch.object(frappe, "get_meta", return_value=fake_meta, create=True):
+            # Valid excluded field passes
+            FakeSettings(
+                [SimpleNamespace(document_type="Customer", excluded_fields="notes")]
+            )._validate_indexed_doctypes()
+
+            # Unknown excluded field raises ValidationError
+            with self.assertRaises(frappe.ValidationError):
+                FakeSettings(
+                    [SimpleNamespace(document_type="Customer", excluded_fields="nonexistent_field")]
+                )._validate_indexed_doctypes()
+
+    def test_indexed_search_frontend_keyboard_nav_docname_highlight_and_help(self):
+        js = (
+            REPO_ROOT
+            / "document_management"
+            / "frappe_document_management"
+            / "page"
+            / "indexed_doctypes_search"
+            / "indexed_doctypes_search.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("$input.trigger('blur')", js)
+        self.assertIn("this.highlightText(row.doc_name)", js)
+        self.assertIn("response.fuzzy_fallback", js)
+        self.assertIn("lastAllFacets", js)
+        self.assertIn("showSyntaxHelp", js)

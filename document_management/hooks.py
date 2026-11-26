@@ -48,7 +48,8 @@ has_permission = {
 doc_events = {
     "*": {
         "on_update": "document_management.search.indexer.handle_doc_save",
-        "on_trash": "document_management.search.indexer.handle_doc_trash"
+        "on_trash": "document_management.search.indexer.handle_doc_trash",
+        "after_rename": "document_management.search.indexer.handle_doc_rename"
     }
 }
 

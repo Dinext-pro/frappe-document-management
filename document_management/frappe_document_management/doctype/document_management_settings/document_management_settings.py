@@ -15,6 +15,42 @@ class DocumentManagementSettings(Document):
         from document_management.search.indexer import clear_indexing_config_cache
 
         clear_indexing_config_cache()
+        self._notify_if_indexed_doctypes_changed()
+
+    def _indexed_doctypes_signature(self, doc):
+        if not doc:
+            return ()
+        return tuple(
+            sorted(
+                (
+                    str(getattr(row, "document_type", "") or "").strip(),
+                    int(getattr(row, "index_comments", 1) or 0),
+                    int(getattr(row, "index_attachments", 0) or 0),
+                    str(getattr(row, "excluded_fields", "") or "").strip(),
+                )
+                for row in (doc.get("indexed_doctypes") or [])
+                if getattr(row, "document_type", None)
+            )
+        )
+
+    def _notify_if_indexed_doctypes_changed(self):
+        if getattr(getattr(frappe, "flags", None), "in_test", False):
+            return
+        get_before = getattr(self, "get_doc_before_save", None)
+        if not callable(get_before):
+            return
+        try:
+            before = get_before()
+            if before and self._indexed_doctypes_signature(before) != self._indexed_doctypes_signature(self):
+                frappe.msgprint(
+                    frappe._(
+                        "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
+                    ),
+                    indicator="blue",
+                    alert=True,
+                )
+        except Exception:
+            pass
 
     def validate(self):
         self._validate_indexed_doctypes()
@@ -100,6 +136,35 @@ class DocumentManagementSettings(Document):
                 frappe.throw(
                     f"Single DocType {frappe.bold(doctype)} cannot be indexed."
                 )
+
+            raw_excluded = getattr(row, "excluded_fields", None)
+            if raw_excluded:
+                from document_management.search.indexer import _parse_excluded_fields
+
+                excluded = _parse_excluded_fields(raw_excluded)
+                if excluded:
+                    valid_fields = {
+                        f.fieldname
+                        for f in (getattr(meta, "fields", None) or [])
+                        if getattr(f, "fieldname", None)
+                    }
+                    for f in getattr(meta, "fields", None) or []:
+                        if getattr(f, "fieldtype", None) == "Table" and getattr(f, "options", None):
+                            try:
+                                child_meta = frappe.get_meta(f.options)
+                                valid_fields.update(
+                                    cf.fieldname
+                                    for cf in (getattr(child_meta, "fields", None) or [])
+                                    if getattr(cf, "fieldname", None)
+                                )
+                            except Exception:
+                                pass
+                    unknown = sorted(excluded - valid_fields)
+                    if unknown:
+                        frappe.throw(
+                            f"Unknown excluded field(s) for {frappe.bold(doctype)}: "
+                            + ", ".join(unknown)
+                        )
 
 
 def _check_folder_ingestion_health(settings):

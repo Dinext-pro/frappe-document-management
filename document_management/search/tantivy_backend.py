@@ -11,6 +11,7 @@ from document_management.search.query import (
     build_natural_query,
     fold_text,
     make_excerpt,
+    positive_query_text,
     search_match_details,
     significant_terms,
 )
@@ -26,6 +27,9 @@ SEARCH_FIELDS = {
     "content_normalized": 1.0,
 }
 
+_DEFAULT_BUILD_NATURAL_QUERY = build_natural_query
+_INDEX_CACHE = {"path": None, "index": None}
+
 
 class IndexRebuildRequired(RuntimeError):
     pass
@@ -33,6 +37,11 @@ class IndexRebuildRequired(RuntimeError):
 
 class IndexBusy(RuntimeError):
     pass
+
+
+def clear_index_cache():
+    _INDEX_CACHE["path"] = None
+    _INDEX_CACHE["index"] = None
 
 
 def _root_path():
@@ -56,16 +65,24 @@ def _lock_path():
     return _root_path() / "index.lock"
 
 
-def _active_generation_name():
+def _read_pointer():
     pointer = _pointer_path()
     if not pointer.exists():
         return None
     try:
-        generation = json.loads(pointer.read_text(encoding="utf-8")).get(
-            "generation"
-        )
+        data = json.loads(pointer.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         raise IndexRebuildRequired("The operational search index pointer is invalid.")
+    if not isinstance(data, dict):
+        raise IndexRebuildRequired("The operational search index pointer is invalid.")
+    return data
+
+
+def _active_generation_name():
+    data = _read_pointer()
+    if not data:
+        return None
+    generation = data.get("generation")
     if (
         not isinstance(generation, str)
         or not generation.startswith("gen-")
@@ -145,13 +162,65 @@ def get_index():
     import tantivy
 
     try:
-        return tantivy.Index.open(get_tantivy_index_path())
+        path = get_tantivy_index_path()
+        if _INDEX_CACHE["path"] == path and _INDEX_CACHE["index"] is not None:
+            return _INDEX_CACHE["index"]
+        index = tantivy.Index.open(path)
+        _INDEX_CACHE["path"] = path
+        _INDEX_CACHE["index"] = index
+        return index
     except IndexRebuildRequired:
+        clear_index_cache()
         raise
     except Exception as exc:
+        clear_index_cache()
         raise IndexRebuildRequired(
             "The operational search index is incompatible or damaged. Rebuild it."
         ) from exc
+
+
+def get_index_stats(doctypes=None):
+    try:
+        pointer = _read_pointer() or {}
+        generation = _active_generation_name()
+        if not generation or not index_exists():
+            return {
+                "ready": False,
+                "generation": None,
+                "index_version": INDEX_VERSION,
+                "rebuilt_at": pointer.get("rebuilt_at"),
+                "num_docs": 0,
+                "by_doctype": {},
+            }
+        index = get_index()
+        index.reload()
+        searcher = index.searcher()
+        by_doctype = {}
+        for doctype in sorted(set(doctypes or [])):
+            try:
+                q = index.parse_query(json.dumps(str(doctype)), ["doc_type"])
+                res = searcher.search(q, 1, count=True)
+                by_doctype[doctype] = int(getattr(res, "count", 0) or 0)
+            except Exception:
+                by_doctype[doctype] = 0
+        return {
+            "ready": True,
+            "generation": generation,
+            "index_version": INDEX_VERSION,
+            "rebuilt_at": pointer.get("rebuilt_at"),
+            "num_docs": int(getattr(searcher, "num_docs", 0) or 0),
+            "by_doctype": by_doctype,
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "generation": None,
+            "index_version": INDEX_VERSION,
+            "rebuilt_at": None,
+            "num_docs": 0,
+            "by_doctype": {},
+            "error": str(exc),
+        }
 
 
 def _new_document(record):
@@ -267,7 +336,7 @@ def _build_hit(searcher, query_str, score, doc_address):
         content=content,
     )
     return {
-        "score": score,
+        "score": float(score or 0),
         "doc_type": _get_first_val(doc, "doc_type"),
         "doc_name": doc_name,
         "title": title,
@@ -276,11 +345,25 @@ def _build_hit(searcher, query_str, score, doc_address):
     }
 
 
+def _rank_batch(hits):
+    return sorted(
+        hits,
+        key=lambda hit: (
+            int(hit.get("quality") or 0),
+            float(hit.get("coverage") or 0),
+            float(hit.get("score") or 0),
+        ),
+        reverse=True,
+    )
+
+
 def iter_search(query_str, doctypes=None, batch_size=100):
     index = get_index()
     index.reload()
     searcher = index.searcher()
     batch_size = max(int(batch_size), 1)
+    seen_keys = set()
+    yielded_any = False
 
     strict_query = build_natural_query(
         index,
@@ -299,48 +382,90 @@ def iter_search(query_str, doctypes=None, batch_size=100):
         )
         if not result.hits:
             break
-        yield [
-            _build_hit(searcher, query_str, score, doc_address)
-            for score, doc_address in result.hits
-        ]
+        batch = []
+        for score, doc_address in result.hits:
+            hit = _build_hit(searcher, query_str, score, doc_address)
+            key = (hit["doc_type"], hit["doc_name"])
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            batch.append(hit)
+        if batch:
+            yielded_any = True
+            yield _rank_batch(batch)
         strict_offset += len(result.hits)
         if strict_offset >= int(result.count or 0):
             break
 
-    if len(significant_terms(query_str)) <= 1:
-        return
-
-    relaxed_query = build_natural_query(
-        index,
-        query_str,
-        SEARCH_FIELDS,
-        require_all=False,
-    )
-    relaxed_query = _apply_doctype_filter(index, relaxed_query, doctypes)
-    relaxed_offset = 0
-    while True:
-        result = _search_result(
-            searcher,
-            relaxed_query,
-            batch_size,
-            offset=relaxed_offset,
+    terms = significant_terms(positive_query_text(query_str))
+    if len(terms) > 1:
+        relaxed_query = build_natural_query(
+            index,
+            query_str,
+            SEARCH_FIELDS,
+            require_all=False,
         )
-        if not result.hits:
-            break
-        candidates = []
-        for score, doc_address in result.hits:
-            hit = _build_hit(searcher, query_str, score, doc_address)
-            minimum_matches = max(1, (hit["total_terms"] + 1) // 2)
-            if hit["matched_terms"] == hit["total_terms"]:
-                continue
-            if hit["matched_terms"] < minimum_matches:
-                continue
-            candidates.append(hit)
-        if candidates:
-            yield candidates
-        relaxed_offset += len(result.hits)
-        if relaxed_offset >= int(result.count or 0):
-            break
+        relaxed_query = _apply_doctype_filter(index, relaxed_query, doctypes)
+        relaxed_offset = 0
+        while True:
+            result = _search_result(
+                searcher,
+                relaxed_query,
+                batch_size,
+                offset=relaxed_offset,
+            )
+            if not result.hits:
+                break
+            candidates = []
+            for score, doc_address in result.hits:
+                hit = _build_hit(searcher, query_str, score, doc_address)
+                key = (hit["doc_type"], hit["doc_name"])
+                if key in seen_keys:
+                    continue
+                minimum_matches = max(1, (hit["total_terms"] + 1) // 2)
+                if hit["matched_terms"] == hit["total_terms"]:
+                    continue
+                if hit["matched_terms"] < minimum_matches:
+                    continue
+                seen_keys.add(key)
+                candidates.append(hit)
+            if candidates:
+                yielded_any = True
+                yield _rank_batch(candidates)
+            relaxed_offset += len(result.hits)
+            if relaxed_offset >= int(result.count or 0):
+                break
+
+    # Typo-tolerant fuzzy fallback only when strict + relaxed produced zero results
+    if (
+        not yielded_any
+        and build_natural_query is _DEFAULT_BUILD_NATURAL_QUERY
+        and any(len(t) >= 4 for t in terms)
+    ):
+        try:
+            fuzzy_query = build_natural_query(
+                index,
+                query_str,
+                SEARCH_FIELDS,
+                require_all=False,
+                allow_prefix=False,
+                fuzzy=True,
+            )
+            fuzzy_query = _apply_doctype_filter(index, fuzzy_query, doctypes)
+            result = _search_result(searcher, fuzzy_query, batch_size, offset=0)
+            fuzzy_hits = []
+            for score, doc_address in result.hits:
+                hit = _build_hit(searcher, query_str, score, doc_address)
+                key = (hit["doc_type"], hit["doc_name"])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                hit["match_type"] = "fuzzy"
+                fuzzy_hits.append(hit)
+            if fuzzy_hits:
+                yield _rank_batch(fuzzy_hits)
+        except Exception:
+            pass
 
 
 def search(query_str, limit=10, doctypes=None, offset=0):
@@ -419,20 +544,31 @@ def rebuild(records):
             final_root = generations / generation
             os.replace(temp_root, final_root)
 
+            rebuilt_at = None
+            try:
+                rebuilt_at = str(frappe.utils.now_datetime())
+            except Exception:
+                pass
             pointer_temp = root / f".current-{frappe.generate_hash(length=8)}.json"
             pointer_temp.write_text(
                 json.dumps(
                     {
                         "generation": generation,
                         "index_version": INDEX_VERSION,
+                        "rebuilt_at": rebuilt_at,
                     }
                 ),
                 encoding="utf-8",
             )
             os.replace(pointer_temp, _pointer_path())
+            clear_index_cache()
             _cleanup_generations(generation)
             _cleanup_legacy_indexes()
-            return {"count": count, "generation": generation}
+            return {
+                "count": count,
+                "generation": generation,
+                "rebuilt_at": rebuilt_at,
+            }
         finally:
             if temp_root.exists():
                 shutil.rmtree(temp_root, ignore_errors=True)

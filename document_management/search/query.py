@@ -393,6 +393,39 @@ LANGUAGE_ALIASES = {
 }
 
 TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+QUOTED_PHRASE_RE = re.compile(r'"([^"]+)"')
+EXCLUDED_TERM_RE = re.compile(r'(?:^|\s)-([^\W_]{2,})', re.UNICODE)
+
+
+def parse_search_syntax(query):
+    """Extract quoted phrases ("...") and negative terms (-word) from a query."""
+    raw = str(query or "")
+    phrases = [
+        " ".join(query_tokens(match.group(1)))
+        for match in QUOTED_PHRASE_RE.finditer(raw)
+        if query_tokens(match.group(1))
+    ]
+    without_phrases = QUOTED_PHRASE_RE.sub(" ", raw)
+    excluded = list(
+        dict.fromkeys(
+            match.group(1).lower()
+            for match in EXCLUDED_TERM_RE.finditer(without_phrases)
+        )
+    )
+    positive_text = EXCLUDED_TERM_RE.sub(" ", without_phrases)
+    return {
+        "phrases": list(dict.fromkeys(phrases)),
+        "excluded": excluded,
+        "positive_text": " ".join(positive_text.split()),
+    }
+
+
+def positive_query_text(query):
+    """Return query text stripped of -excluded terms for scoring, excerpts, and highlights."""
+    parsed = parse_search_syntax(query)
+    if not parsed["phrases"] and not parsed["excluded"]:
+        return str(query or "")
+    return f'{parsed["positive_text"]} {" ".join(parsed["phrases"])}'.strip()
 
 
 def normalize_language(language):
@@ -482,10 +515,11 @@ def make_excerpt(content, query, maximum=360, language=None):
     if len(normalized) <= maximum:
         return normalized
 
+    positive = positive_query_text(query)
     folded_content, offsets = _fold_with_offsets(normalized)
     positions = [
         folded_content.find(fold_text(term))
-        for term in significant_terms(query, language=language)
+        for term in significant_terms(positive, language=language)
     ]
     positions = [position for position in positions if position >= 0]
     center = offsets[min(positions)] if positions and offsets else 0
@@ -499,9 +533,10 @@ def make_excerpt(content, query, maximum=360, language=None):
 
 
 def search_match_details(query, doc_name="", title="", content="", language=None):
-    terms = significant_terms(query, language=language)
+    positive = positive_query_text(query)
+    terms = significant_terms(positive, language=language)
     folded_terms = list(dict.fromkeys(fold_text(term) for term in terms))
-    folded_query = " ".join(fold_text(query).split())
+    folded_query = " ".join(fold_text(positive).split())
     folded_name = " ".join(fold_text(doc_name).split())
     folded_title = " ".join(fold_text(title).split())
     folded_content = fold_text(content)
@@ -551,14 +586,22 @@ def build_natural_query(
     fields,
     language=None,
     require_all=True,
+    allow_prefix=True,
+    fuzzy=False,
 ):
     import tantivy
 
-    tokens = query_tokens(query)
-    terms = significant_terms(query, language=language)
+    parsed_syntax = parse_search_syntax(query)
+    positive_source = (
+        f'{parsed_syntax["positive_text"]} {" ".join(parsed_syntax["phrases"])}'.strip()
+        if (parsed_syntax["phrases"] or parsed_syntax["excluded"])
+        else str(query or "")
+    )
+    tokens = query_tokens(positive_source)
+    terms = significant_terms(positive_source, language=language)
     if not terms:
         terms = list(dict.fromkeys(tokens))
-    if not terms:
+    if not terms and not parsed_syntax["phrases"]:
         return tantivy.Query.empty_query()
 
     field_weights = (
@@ -566,16 +609,62 @@ def build_natural_query(
         if isinstance(fields, dict)
         else {field: 1.0 for field in fields}
     )
+    schema = getattr(index, "schema", None)
+    has_regex = allow_prefix and hasattr(tantivy.Query, "regex_query") and schema is not None
+    has_fuzzy = fuzzy and hasattr(tantivy.Query, "fuzzy_term_query") and schema is not None
+    must_not_occur = getattr(tantivy.Occur, "MustNot", None)
+
     clauses = []
     for term in terms:
         variants = list(dict.fromkeys([term, fold_text(term)]))
         alternatives = []
         for field, weight in field_weights.items():
             for variant in variants:
-                parsed = index.parse_query(json.dumps(variant), [field])
-                if weight != 1:
-                    parsed = tantivy.Query.boost_query(parsed, float(weight))
-                alternatives.append((tantivy.Occur.Should, parsed))
+                if has_fuzzy and len(variant) >= 4:
+                    try:
+                        fq = tantivy.Query.fuzzy_term_query(
+                            schema,
+                            field,
+                            variant,
+                            distance=1,
+                            transposition_cost_one=True,
+                            prefix=False,
+                        )
+                        if weight != 1:
+                            fq = tantivy.Query.boost_query(fq, float(weight) * 0.75)
+                        alternatives.append((tantivy.Occur.Should, fq))
+                    except Exception:
+                        pass
+                else:
+                    parsed = index.parse_query(json.dumps(variant), [field])
+                    if weight != 1:
+                        parsed = tantivy.Query.boost_query(parsed, float(weight))
+                    alternatives.append((tantivy.Occur.Should, parsed))
+                    if (
+                        has_regex
+                        and (
+                            (
+                                len(variant) >= 3
+                                and field in {"doc_name", "doc_name_normalized"}
+                            )
+                            or (
+                                len(variant) >= 4
+                                and field in {"title", "title_normalized"}
+                            )
+                        )
+                    ):
+                        try:
+                            pq = tantivy.Query.regex_query(
+                                schema,
+                                field,
+                                f"{re.escape(variant)}.*",
+                            )
+                            pq = tantivy.Query.boost_query(pq, max(float(weight) * 0.6, 0.5))
+                            alternatives.append((tantivy.Occur.Should, pq))
+                        except Exception:
+                            pass
+        if not alternatives:
+            continue
         term_query = (
             alternatives[0][1]
             if len(alternatives) == 1
@@ -588,7 +677,29 @@ def build_natural_query(
             )
         )
 
-    if len(tokens) > 1:
+    # Explicit user-quoted phrases must match in at least one field
+    for user_phrase in parsed_syntax["phrases"]:
+        phrase_variants = list(dict.fromkeys([user_phrase, fold_text(user_phrase)]))
+        phrase_alts = []
+        for field, weight in field_weights.items():
+            for phrase_text in phrase_variants:
+                phrase_q = index.parse_query(f'"{phrase_text}"', [field])
+                phrase_q = tantivy.Query.boost_query(
+                    phrase_q,
+                    max(float(weight) * 2.5, 2.5),
+                )
+                phrase_alts.append((tantivy.Occur.Should, phrase_q))
+        if phrase_alts:
+            clauses.append(
+                (
+                    tantivy.Occur.Must,
+                    phrase_alts[0][1]
+                    if len(phrase_alts) == 1
+                    else tantivy.Query.boolean_query(phrase_alts),
+                )
+            )
+
+    if len(tokens) > 1 and not fuzzy:
         phrases = list(
             dict.fromkeys(
                 [
@@ -609,6 +720,21 @@ def build_natural_query(
                         ),
                     )
                 )
+
+    if must_not_occur is not None:
+        for excluded_term in parsed_syntax["excluded"]:
+            variants = list(dict.fromkeys([excluded_term, fold_text(excluded_term)]))
+            for field in field_weights:
+                for variant in variants:
+                    clauses.append(
+                        (
+                            must_not_occur,
+                            index.parse_query(json.dumps(variant), [field]),
+                        )
+                    )
+
+    if not clauses:
+        return tantivy.Query.empty_query()
     if len(clauses) == 1:
         return clauses[0][1]
     return tantivy.Query.boolean_query(clauses)

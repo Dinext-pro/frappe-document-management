@@ -2479,3 +2479,135 @@ msgstr "Deshabilitado"
 
 msgid "File (Drag & Drop)"
 msgstr "Archivo (arrastrar y soltar)"
+
+msgid "Search indexed operational records. Supports \"exact phrases\", -exclusions, prefixes, and typo tolerance."
+msgstr "Busca registros operativos indexados. Admite \"frases exactas\", -exclusiones, prefijos y tolerancia a errores tipográficos."
+
+msgid "Search customers, invoices, loans, or \"exact phrase\" -exclude..."
+msgstr "Buscar clientes, facturas, préstamos o \"frase exacta\" -excluir..."
+
+msgid "Clear search (Esc)"
+msgstr "Limpiar búsqueda (Esc)"
+
+msgid "Relevance"
+msgstr "Relevancia"
+
+msgid "Most recent"
+msgstr "Más reciente"
+
+msgid "Oldest"
+msgstr "Más antiguo"
+
+msgid "Title A-Z"
+msgstr "Título A-Z"
+
+msgid "From"
+msgstr "Desde"
+
+msgid "To"
+msgstr "Hasta"
+
+msgid "Per page"
+msgstr "Por página"
+
+msgid "Reset filters"
+msgstr "Restablecer filtros"
+
+msgid "Enter a query to search the configured indexes."
+msgstr "Ingresa una consulta para buscar en los índices configurados."
+
+msgid "Tip: Press / to focus, Up/Down to navigate results, Enter to open, Esc to clear."
+msgstr "Consejo: Pulsa / para enfocar, ↑/↓ para navegar resultados, Enter para abrir, Esc para limpiar."
+
+msgid "Index Status"
+msgstr "Estado del índice"
+
+msgid "Indexed DocTypes Search Status"
+msgstr "Estado de búsqueda de DocTypes indexados"
+
+msgid "Indexed DocTypes Search index rebuilt"
+msgstr "Índice de búsqueda de DocTypes reconstruido"
+
+msgid "Ready"
+msgstr "Listo"
+
+msgid "Rebuild Required"
+msgstr "Requiere reconstrucción"
+
+msgid "Total Indexed"
+msgstr "Total indexado"
+
+msgid "Last Rebuilt"
+msgstr "Última reconstrucción"
+
+msgid "Generation"
+msgstr "Generación"
+
+msgid "DocType"
+msgstr "DocType"
+
+msgid "No DocTypes configured for indexing."
+msgstr "No hay DocTypes configurados para indexar."
+
+msgid "Rebuild Index Now"
+msgstr "Reconstruir índice ahora"
+
+msgid "Recent:"
+msgstr "Recientes:"
+
+msgid "Clear history"
+msgstr "Limpiar historial"
+
+msgid "Similar match"
+msgstr "Coincidencia similar"
+
+msgid "Modified"
+msgstr "Modificado"
+
+msgid "Index Comments"
+msgstr "Indexar comentarios"
+
+msgid "Index PDF Attachments"
+msgstr "Indexar PDFs adjuntos"
+
+msgid "Excluded Fields"
+msgstr "Campos excluidos"
+
+msgid "Search Syntax & Shortcuts"
+msgstr "Sintaxis de búsqueda y atajos"
+
+msgid "Match an exact phrase across title, ID, content, or comments"
+msgstr "Coincidir con una frase exacta en título, ID, contenido o comentarios"
+
+msgid "Exclude records containing a specific term"
+msgstr "Excluir registros que contengan un término específico"
+
+msgid "Prefix matching on record IDs and titles"
+msgstr "Coincidencia por prefijo en IDs y títulos de registros"
+
+msgid "Automatic typo-tolerant fallback when no exact matches exist"
+msgstr "Respaldo automático tolerante a errores tipográficos cuando no hay coincidencias exactas"
+
+msgid "Keyboard shortcuts"
+msgstr "Atajos de teclado"
+
+msgid "focus search"
+msgstr "enfocar búsqueda"
+
+msgid "navigate results"
+msgstr "navegar resultados"
+
+msgid "open record"
+msgstr "abrir registro"
+
+msgid "open in new tab"
+msgstr "abrir en nueva pestaña"
+
+msgid "clear search"
+msgstr "limpiar búsqueda"
+
+msgid "No exact matches found. Showing similar results."
+msgstr "No se encontraron coincidencias exactas. Mostrando resultados similares."
+
+msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
+msgstr "La configuración de DocTypes indexados cambió. Reconstruye Indexed DocTypes Search para aplicar los nuevos ajustes a los registros existentes."

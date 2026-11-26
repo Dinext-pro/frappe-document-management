@@ -26,7 +26,8 @@
    "label": "User",
    "options": "User",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "default": "Active",
@@ -34,7 +35,8 @@
    "fieldtype": "Select",
    "label": "Status",
    "options": "Active\nArchived",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "filters_json",
@@ -45,7 +47,8 @@
    "fieldname": "last_message_at",
    "fieldtype": "Datetime",
    "label": "Last Message At",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "index_web_pages_for_search": 0,

@@ -31,7 +31,7 @@
             </div>
         </div>
     </main>
-    <script src="/assets/document_management/js/pdf_search_viewer.v5_7_284_9.js"></script>
+    <script src="/assets/document_management/js/pdf_search_viewer.v5_7_284_10.js"></script>
     <script src="/assets/document_management/js/guest_pdf_viewer.js"></script>
 </template>
 
@@ -70,7 +70,7 @@
         const assets = origin + '/assets/document_management/js/';
         const policy = "default-src 'none'; connect-src blob:; img-src data: blob:; font-src data: blob:; "
             + "style-src 'unsafe-inline'; script-src 'wasm-unsafe-eval' "
-            + assets + "pdf_search_viewer.v5_7_284_9.js " + assets + "guest_pdf_viewer.js";
+            + assets + "pdf_search_viewer.v5_7_284_10.js " + assets + "guest_pdf_viewer.js";
         const styles = document.getElementById('shared-document-styles').outerHTML;
         const viewerTemplate = document.getElementById('shared-pdf-template').innerHTML;
         frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8">'
@@ -79,7 +79,7 @@
             + styles + '</head><body>' + viewerTemplate + '</body></html>';
         frame.addEventListener('load', async () => {
             try {
-                const response = await fetch(previewUrl, {cache: 'no-store', credentials: 'omit'});
+                const response = await fetch(previewUrl, {cache: 'no-store', credentials: 'same-origin'});
                 if (!response.ok || response.headers.get('Content-Type') !== 'application/pdf') {
                     throw new Error('PDF preview request failed');
                 }

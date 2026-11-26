@@ -114,8 +114,9 @@ function show_upload_version_dialog(frm, is_new = false) {
                 d.hide();
                 frappe.show_alert({message: __('File uploaded successfully'), indicator: 'green'});
                 return frm.reload_doc();
-            }).catch(() => {
+            }).catch((err) => {
                 d.get_primary_btn().prop('disabled', false).html(__('Upload'));
+                frappe.msgprint(err?.message || __('File upload failed.'));
             });
         }
     });
@@ -178,22 +179,5 @@ function show_upload_version_dialog(frm, is_new = false) {
 }
 
 async function upload_document_file(file, method, fields) {
-    const form_data = new FormData();
-    form_data.append('file', file, file.name);
-    form_data.append('is_private', '1');
-    form_data.append('method', method);
-    Object.entries(fields || {}).forEach(([key, value]) => {
-        form_data.append(key, value == null ? '' : value);
-    });
-    const response = await fetch('/api/method/upload_file', {
-        method: 'POST',
-        body: form_data,
-        credentials: 'same-origin',
-        headers: {'X-Frappe-CSRF-Token': frappe.csrf_token}
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.exc || !payload.message) {
-        throw new Error(payload.exception || __('File upload failed.'));
-    }
-    return payload.message;
+    return frappe.document_management.upload_document_file(file, method, fields);
 }

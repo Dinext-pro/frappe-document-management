@@ -563,3 +563,104 @@ def test_tantivy_rebuild_publishes_generation_atomically(monkeypatch, tmp_path):
     assert pointer["generation"] == "gen-generation123"
     assert indexed[0]["doc_name_normalized"] == "cus-001"
     assert indexed[0]["title_normalized"] == "cliente nomina"
+
+def test_live_field_comment_attachment_and_child_permissions(monkeypatch, tmp_path):
+    import pytest
+    from document_management.search import indexer
+
+    def throw(message, exc=None):
+        raise (exc or AssertionError)(message)
+
+    monkeypatch.setattr(indexer.frappe.local, "flags", SimpleNamespace(in_test=False), raising=False)
+    monkeypatch.setattr(indexer.frappe, "_", lambda text: text)
+    monkeypatch.setattr(indexer.frappe, "throw", throw)
+
+    class Source(Row):
+        def __init__(self, doctype, name, fields=(), *, allowed=True, **values):
+            super().__init__(fields, **values)
+            self.doctype, self.name, self.allowed = doctype, name, allowed
+            self.modified, self.owner = "2026-11-27", "search-test"
+            self.grants = {f.fieldname for f in fields}
+            self.meta = SimpleNamespace(
+                fields=fields, title_field=None, istable=False,
+                get_field=lambda name: next((f for f in fields if f.fieldname == name), None),
+                get_permitted_fieldnames=lambda **kwargs: list(self.grants),
+            )
+
+        def has_permission(self, *args, **kwargs):
+            return self.allowed
+
+    parent = Source("Task", "TASK-1", [
+        _field("title", "Data"), _field("private_note", "Data", permlevel=1), _field("omitted", "Data"),
+        _field("items", "Table", options="Task Item", hidden=0), _field("attachment", "Attach"),
+    ], title="Visible title", private_note="RestrictedField", omitted="OmittedSetting")
+    parent.meta.title_field = "title"
+    parent.grants.remove("private_note")
+    children = [
+        Source("Task Item", "ROW-1", [_field("entry", "Data")], entry="VisibleChild"),
+        Source("Task Item", "ROW-2", [_field("entry", "Data")], entry="DeniedChild", allowed=False),
+    ]
+    for n, child in enumerate(children, 1):
+        child.meta.istable = True
+        child.parenttype, child.parent, child.parentfield, child.idx = "Task", parent.name, "items", n
+    parent["items"] = children
+    comments = [
+        Source("Comment", "C1", [_field("content", "Text")], content="VisibleComment"),
+        Source("Comment", "C2", [_field("content", "Text")], content="DeniedComment", allowed=False),
+    ]
+    for comment in comments:
+        comment.update(name=comment.name, reference_name=parent.name)
+    root = tmp_path / "private" / "files"
+    root.mkdir(parents=True)
+    files = []
+    for name, text, allowed in (("F1", "VisibleAttachment", True), ("F2", "DeniedAttachment", False)):
+        path = root / (name + ".txt")
+        path.write_text(text)
+        file = Source("File", name, [_field("file_name", "Data"), _field("file_url", "Data")], allowed=allowed)
+        file.file_name = path.name
+        file.is_private = True
+        file.get_full_path = lambda path=path: str(path)
+        file.update(name=name, file_url="/private/files/" + path.name, attached_to_field="attachment", is_private=1)
+        files.append(file)
+    docs = {(d.doctype, d.name): d for d in [parent, *children, *comments, *files]}
+    rules = {"Task": {"excluded_fields": ["omitted"], "index_comments": True, "index_attachments": True}}
+    monkeypatch.setattr(indexer, "_get_indexing_config", lambda **kw: (True, False, set(rules), rules))
+    monkeypatch.setattr(indexer, "_can_offer_doctype", lambda dt: True)
+    monkeypatch.setattr(indexer, "get_url_to_form", lambda dt, name: f"/app/{dt.lower()}/{name}")
+    monkeypatch.setattr(indexer.frappe, "get_site_path", lambda *p: str(tmp_path.joinpath(*p)))
+    monkeypatch.setattr(indexer.frappe, "get_meta", lambda dt: next(d.meta for d in docs.values() if d.doctype == dt), raising=False)
+    monkeypatch.setattr(indexer.frappe, "get_doc", lambda dt, name: docs[(dt, name)])
+    monkeypatch.setattr(indexer.frappe, "get_list", lambda dt, **kw: [name for kind, name in docs if kind == dt], raising=False)
+    monkeypatch.setattr(indexer.frappe, "get_all", lambda dt, **kw: {"File": files, "Comment": comments}[dt])
+    monkeypatch.setattr(indexer.frappe, "session", SimpleNamespace(user="reader@example.test"))
+    monkeypatch.setattr(indexer.tantivy_backend, "iter_search", lambda *a, **kw: iter([
+        [{"doc_type": "Task", "doc_name": parent.name, "_raw_content": "OldPrivateSnapshot"}]
+    ]))
+
+    def rows(query):
+        result = indexer.search(query)
+        assert "exact_error" not in result
+        return result["exact"]
+
+    for token in ("OldPrivateSnapshot", "RestrictedField", "DeniedChild", "DeniedComment", "DeniedAttachment", "OmittedSetting"):
+        assert rows(token) == []
+    assert rows('"visible title" -restrictedfield')
+    for token in ("VisibleChild", "VisibleComment", "VisibleAttachment"):
+        assert token in rows(token)[0]["excerpt"]
+    assert "OldPrivateSnapshot" not in str(rows("Visible"))
+    parent.grants.add("private_note")
+    assert rows('"visible title" -restrictedfield') == []
+    assert "RestrictedField" in rows("RestrictedField")[0]["excerpt"]
+    preview = indexer.get_search_result_preview("Task", parent.name, "VisibleAttachment")
+    assert [file["title"] for file in preview["matched_attachments"]] == ["F1.txt"]
+    rules["Task"].update(index_comments=False, index_attachments=False)
+    assert not rows("VisibleComment") and not rows("VisibleAttachment")
+    child_preview = indexer.get_search_result_preview("Task Item", "ROW-1", "VisibleChild")
+    assert child_preview["route"] == "/app/task/TASK-1"
+    assert child_preview["matched_child_rows"][0]["row_name"] == "ROW-1"
+    with pytest.raises(indexer.frappe.PermissionError):
+        indexer.get_search_result_preview("Task Item", "ROW-2", "DeniedChild")
+    parent.grants.remove("items")
+    with pytest.raises(indexer.frappe.PermissionError):
+        indexer.get_search_result_preview("Task Item", "ROW-1", "VisibleChild")
+    assert not rows("VisibleChild")

@@ -5,6 +5,27 @@ app_description = "Standalone Document Management module for Frappe"
 app_email = "eruiz@wbapps.com"
 app_license = "mit"
 
+# The app's console, PDF viewer, chat, and document forms still use Font
+# Awesome 4 icons. Frappe v16 ships the font but no longer loads it in Desk.
+app_include_css = [
+    "/assets/frappe/css/fonts/fontawesome/font-awesome.min.css",
+    "/assets/document_management/css/pdf_search_viewer.css",
+]
+app_include_js = [
+    "/assets/document_management/js/document_upload.js",
+    "/assets/document_management/js/console_helpers.js",
+]
+
+add_to_apps_screen = [
+    {
+        "name": "document_management",
+        "logo": "/assets/document_management/images/logo.svg",
+        "title": "Document Management",
+        "route": "/desk/frappe-document-management",
+        "has_permission": "document_management.frappe_document_management.utils.auth.can_access_app",
+    }
+]
+
 after_install = "document_management.install.ensure_document_management_settings"
 after_migrate = "document_management.install.ensure_document_management_settings"
 
@@ -27,7 +48,8 @@ has_permission = {
 doc_events = {
     "*": {
         "on_update": "document_management.search.indexer.handle_doc_save",
-        "on_trash": "document_management.search.indexer.handle_doc_trash"
+        "on_trash": "document_management.search.indexer.handle_doc_trash",
+        "after_rename": "document_management.search.indexer.handle_doc_rename"
     }
 }
 
@@ -40,7 +62,8 @@ scheduler_events = {
     ],
     "daily": [
         "document_management.frappe_document_management.utils.ml_tagger.train_tagger_model",
-        "document_management.frappe_document_management.utils.archive_lifecycle.purge_expired_trash"
+        "document_management.frappe_document_management.utils.archive_lifecycle.purge_expired_trash",
+        "document_management.frappe_document_management.utils.archive_lifecycle.notify_expiring_documents"
     ],
     "weekly": [
         "document_management.frappe_document_management.utils.archive_sanity.scheduled_archive_sanity_check"

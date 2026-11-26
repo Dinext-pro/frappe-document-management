@@ -25,7 +25,8 @@
   {
    "fieldname": "document_version",
    "fieldtype": "Data",
-   "label": "Document Version Row"
+   "label": "Document Version Row",
+   "search_index": 1
   },
   {
    "fieldname": "version_number",

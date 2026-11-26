@@ -18,10 +18,13 @@
                 <button class="btn btn-sm btn-default" id="chat-filters">
                     <i class="fa fa-filter"></i> {{ __("Filters") }}
                 </button>
-                <button class="btn btn-sm btn-default" id="rename-chat">
+                <button class="btn btn-sm btn-default" id="export-chat" title="{{ __("Export Markdown") }}">
+                    <i class="fa fa-download"></i>
+                </button>
+                <button class="btn btn-sm btn-default" id="rename-chat" title="{{ __("Rename conversation") }}">
                     <i class="fa fa-pencil"></i>
                 </button>
-                <button class="btn btn-sm btn-default text-danger" id="delete-chat">
+                <button class="btn btn-sm btn-default text-danger" id="delete-chat" title="{{ __("Delete conversation") }}">
                     <i class="fa fa-trash"></i>
                 </button>
             </div>

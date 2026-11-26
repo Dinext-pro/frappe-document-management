@@ -11,11 +11,11 @@
         </div>
         {% if show_download_button %}
             <a class="shared-document-download" href="{{ download_url | e }}">
-                {{ _('Download') if isolated_pdf else 'Descargar' }}
+                {{ _('Download') }}
             </a>
         {% endif %}
     </div>
     <div class="shared-document-viewer" id="shared-document-viewer">
-        <div class="shared-document-empty">{{ _('Loading document...') if isolated_pdf else 'Cargando documento...' }}</div>
+        <div class="shared-document-empty">{{ _('Loading document...') }}</div>
     </div>
 </div>

@@ -31,11 +31,13 @@ Document Management is a standalone app for the Frappe Framework, designed to ar
 
 ### 1. Prerequisites
 
-Ensure you have a working Frappe bench (version 15+). 
-You may also need to install system dependencies for OCR and document preview generation (like LibreOffice for converting office documents to PDF):
+Use a Frappe Framework v16 bench with Python 3.14+ and Node.js 24+.
+The `main` branch targets v16; the `v15` branch preserves the previous release
+for Frappe v15 sites.
+You may also need to install system dependencies for OCR and document preview generation (like LibreOffice for converting office documents to PDF and Poppler for PDF page rendering):
 ```bash
-# Ubuntu/Debian example for OCRmyPDF and LibreOffice
-sudo apt-get install ocrmypdf tesseract-ocr
+# Ubuntu/Debian example for OCRmyPDF, Poppler, and LibreOffice
+sudo apt-get install -y ocrmypdf tesseract-ocr poppler-utils
 sudo apt-get install -y libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress default-jre
 ```
 
@@ -58,17 +60,30 @@ Install the app onto your Frappe site:
 bench --site [your-site-name] install-app document_management
 ```
 
+For an existing v16 installation, back up the site and apply app updates with:
+
+```bash
+bench --site [your-site-name] backup
+bench --site [your-site-name] migrate
+bench build --app document_management
+```
+
+The app appears on the v16 apps screen as **Document Management**. Its Dock
+opens the **Frappe Document Management** module, whose Sidebar contains the
+console, document lists, search, chat, and settings.
+
 ### 4. Install Python Dependencies
 
-This app may require additional Python libraries for semantic search and AI integrations (like sentence-transformers, 	antivy, openai, etc.). Ensure they are installed in your bench's virtual environment:
+Python dependencies (`tantivy`, `faiss-cpu`, `sentence-transformers`, `openai`, `ocrmypdf`, `pdfplumber`, `scikit-learn`, etc.) are declared in `pyproject.toml`. Install the app in editable mode in your bench's virtual environment:
 ```bash
 ./env/bin/pip install -e apps/document_management
 ```
-*(Note: Define your dependencies in pyproject.toml before running this).*
+
+Frontend dependencies (`vue`, `marked`, `dompurify`, and the PDF.js search viewer bundle) are vendored locally under `document_management/public/js/`, so the Console, Document Chat, and Share pages work without external CDN access.
 
 ## Configuration
 
-After installation, go to the **Document Management Console** in your Frappe interface to get started. You can configure AI providers, OCR settings, and search indices via the **Document Management Settings** page.
+After installation, go to the **Document Management Console** in your Frappe interface to get started. You can configure AI providers, OCR settings, and search indices via the **Document Management Settings** page, and use the **Check System Health** button to verify system binaries (`ocrmypdf`, `tesseract`, `libreoffice`, `pdftoppm`), search/RAG indexes, and AI endpoint settings.
 
 ### Physical document storage
 
@@ -88,8 +103,9 @@ Supported tokens are `{category}`, `{department}`, `{document}`,
 when a document is saved and new uploads are placed in the configured path.
 
 Enable **Encrypt Document Files at Rest** to encrypt private document originals
-and generated previews on disk using the site's `encryption_key` from
-`site_config.json`, the same key family Frappe uses for encrypted passwords.
+and generated previews on disk using streaming chunked AES-256-GCM (`FDMENC2`)
+derived via HKDF-SHA256 from the site's `encryption_key` in `site_config.json`
+(legacy `FDMENC1` Fernet files remain transparently readable).
 Back up `site_config.json`; encrypted files cannot be recovered without that key.
 
 ### Folder ingestion

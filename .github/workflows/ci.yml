@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'dinext/main/v15', 'dinext/upgrade/**']
+  pull_request:
+    branches: [main, 'dinext/main/v15', 'dinext/upgrade/**']
+
+jobs:
+  lint-and-validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install lint and standalone test tools
+        run: python -m pip install --upgrade pip ruff pytest cryptography numpy werkzeug
+
+      - name: Lint Python with Ruff
+        run: ruff check document_management
+
+      - name: Validate DocType and metadata JSON files
+        run: |
+          python -c "
+          import json, pathlib
+          files = list(pathlib.Path('document_management').rglob('*.json')) + [pathlib.Path('package.json')]
+          for f in files:
+              json.loads(f.read_text(encoding='utf-8'))
+          print(f'Validated {len(files)} JSON files.')
+          "
+
+      - name: Check Python syntax across all modules
+        run: python -m compileall -q document_management
+
+      - name: Check JavaScript syntax (including inline template scripts)
+        run: |
+          for f in $(find document_management -name '*.js' ! -path '*/vendor/*' ! -name 'pdf_search_viewer.v5_*' ! -name 'pdf_search_viewer.source.js'); do
+            node --check "$f"
+          done
+          python -c "
+          import pathlib, re, subprocess, tempfile
+          html = pathlib.Path('document_management/www/document_share.html').read_text(encoding='utf-8')
+          m = re.search(r'<script>(.*?)</script>', html, flags=re.DOTALL)
+          assert m, 'Missing inline script in document_share.html'
+          with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as f:
+              f.write(m.group(1))
+              f.flush()
+              subprocess.run(['node', '--check', f.name], check=True)
+          "
+
+      - name: Run JavaScript unit tests
+        run: node --test document_management/public/js/test_console_helpers.mjs
+
+      - name: Run standalone Python unit tests
+        run: |
+          pytest \
+            document_management/frappe_document_management/utils/test_improvements.py \
+            document_management/frappe_document_management/rag/test_chunking.py \
+            document_management/frappe_document_management/rag/test_providers.py \
+            document_management/frappe_document_management/utils/test_archive_sanity.py \
+            document_management/frappe_document_management/utils/test_ocr_worker.py \
+            document_management/search/test_indexer.py \
+            document_management/frappe_document_management/utils/test_guest_resolver.py

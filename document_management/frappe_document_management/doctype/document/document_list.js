@@ -8,29 +8,29 @@ frappe.listview_settings['Document'] = {
 
 function show_quick_upload_dialog(listview) {
     let d = new frappe.ui.Dialog({
-        title: 'Upload Document',
+        title: __('Upload Document'),
         fields: [
             {
-                label: 'Document Code (Optional)',
+                label: __('Document Code (Optional)'),
                 fieldname: 'document_code',
                 fieldtype: 'Data',
-                description: 'Leave blank to auto-generate'
+                description: __('Leave blank to auto-generate')
             },
             {
-                label: 'Title',
+                label: __('Title'),
                 fieldname: 'title',
                 fieldtype: 'Data',
                 reqd: 1
             },
             {
-                label: 'Category',
+                label: __('Category'),
                 fieldname: 'category',
                 fieldtype: 'Link',
                 options: 'Document Category',
                 reqd: 1
             },
             {
-                label: 'Folder',
+                label: __('Folder'),
                 fieldname: 'folder',
                 fieldtype: 'Link',
                 options: 'File',
@@ -44,33 +44,34 @@ function show_quick_upload_dialog(listview) {
             {
                 fieldname: 'file_upload_area',
                 fieldtype: 'HTML',
-                label: 'File (Drag & Drop)'
+                label: __('File (Drag & Drop)')
             }
         ],
-        primary_action_label: 'Upload',
+        primary_action_label: __('Upload'),
         primary_action: function(values) {
             if (!d.pending_file) {
                 frappe.msgprint(__('Please select a file first'));
                 return;
             }
-            
-            d.get_primary_btn().prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Uploading...');
-            
+
+            d.get_primary_btn().prop('disabled', true).html(`<i class="fa fa-spinner fa-spin"></i> ${__('Uploading...')}`);
+
             upload_document_file(
                 d.pending_file,
                 'document_management.frappe_document_management.page.document_management_console.document_management_console.quick_upload',
                 {
-                        title: values.title,
-                        category: values.category,
-                        folder: values.folder || '',
-                        document_code: values.document_code || ''
+                    title: values.title,
+                    category: values.category,
+                    folder: values.folder || '',
+                    document_code: values.document_code || ''
                 }
             ).then(() => {
                 d.hide();
                 frappe.show_alert({message: __('Document uploaded successfully'), indicator: 'green'});
                 listview.refresh();
-            }).catch(() => {
+            }).catch((err) => {
                 d.get_primary_btn().prop('disabled', false).html(__('Upload'));
+                frappe.msgprint(err?.message || __('File upload failed.'));
             });
         }
     });
@@ -80,7 +81,7 @@ function show_quick_upload_dialog(listview) {
     $wrapper.html(`
         <div class="file-drop-zone" style="border: 2px dashed #ccc; border-radius: 8px; padding: 30px; text-align: center; background: #f9f9f9; cursor: pointer; transition: all 0.2s;">
             <div style="font-size: 32px; color: #666; margin-bottom: 10px;"><i class="fa fa-cloud-upload"></i></div>
-            <p style="margin: 0; color: #666;">Drag & Drop your file here or click to browse</p>
+            <p style="margin: 0; color: #666;">${__('Drag & Drop your file here or click to browse')}</p>
             <input type="file" id="file-input-hidden" style="display: none;">
         </div>
         <div id="file-preview-area" style="display: none; align-items: center; background: #f0f1f3; padding: 10px 15px; border-radius: 8px; margin-top: 15px; gap: 12px;">
@@ -101,7 +102,7 @@ function show_quick_upload_dialog(listview) {
     $dropZone.on('dragover', function(e) { e.preventDefault(); e.stopPropagation(); $(this).css({'background': '#eef2ff', 'border-color': '#4f46e5'}); });
     $dropZone.on('dragleave', function(e) { e.preventDefault(); e.stopPropagation(); $(this).css({'background': '#f9f9f9', 'border-color': '#ccc'}); });
     $dropZone.on('drop', function(e) {
-        e.preventDefault(); e.stopPropagation(); 
+        e.preventDefault(); e.stopPropagation();
         $(this).css({'background': '#f9f9f9', 'border-color': '#ccc'});
         if (e.originalEvent.dataTransfer.files.length > 0) {
             handle_file(e.originalEvent.dataTransfer.files[0]);
@@ -109,9 +110,9 @@ function show_quick_upload_dialog(listview) {
     });
     $dropZone.on('click', function() { $fileInput.click(); });
     $fileInput.on('click', function(e) { e.stopPropagation(); });
-    $fileInput.on('change', function() { 
+    $fileInput.on('change', function() {
         if (this.files.length > 0) {
-            handle_file(this.files[0]); 
+            handle_file(this.files[0]);
         }
     });
 
@@ -128,10 +129,10 @@ function show_quick_upload_dialog(listview) {
         $fileName.text(f.name);
         $dropZone.hide();
         $previewArea.css('display', 'flex');
-        
+
         // Auto-fill title
         if (!d.get_value('title')) {
-            d.set_value('title', f.name.replace(/\.[^/.]+$/, ""));
+            d.set_value('title', f.name.replace(/\.[^/.]+$/, ''));
         }
     }
 
@@ -139,22 +140,5 @@ function show_quick_upload_dialog(listview) {
 }
 
 async function upload_document_file(file, method, fields) {
-    const form_data = new FormData();
-    form_data.append('file', file, file.name);
-    form_data.append('is_private', '1');
-    form_data.append('method', method);
-    Object.entries(fields || {}).forEach(([key, value]) => {
-        form_data.append(key, value == null ? '' : value);
-    });
-    const response = await fetch('/api/method/upload_file', {
-        method: 'POST',
-        body: form_data,
-        credentials: 'same-origin',
-        headers: {'X-Frappe-CSRF-Token': frappe.csrf_token}
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.exc || !payload.message) {
-        throw new Error(payload.exception || __('File upload failed.'));
-    }
-    return payload.message;
+    return frappe.document_management.upload_document_file(file, method, fields);
 }

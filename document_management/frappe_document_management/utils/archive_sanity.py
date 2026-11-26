@@ -7,6 +7,8 @@ from document_management.frappe_document_management.utils.document_provider impo
 from frappe.utils.file_manager import get_file_path
 
 from document_management.frappe_document_management.utils.file_crypto import (
+    file_encryption_enabled,
+    is_encrypted_path,
     sha256_path,
 )
 
@@ -34,6 +36,7 @@ def _check_stored_file(
     document,
     version,
     kind,
+    check_encryption=False,
 ):
     if not file_url:
         return
@@ -55,6 +58,14 @@ def _check_stored_file(
             **context,
         )
         return
+    if check_encryption and not is_encrypted_path(path):
+        _issue(
+            issues,
+            "warning",
+            f"{kind}_unencrypted",
+            f"{kind.title()} file is stored unencrypted while file encryption is enabled.",
+            **context,
+        )
     if not expected_checksum:
         _issue(
             issues,
@@ -64,7 +75,17 @@ def _check_stored_file(
             **context,
         )
         return
-    actual_checksum = _sha256_file(path)
+    try:
+        actual_checksum = _sha256_file(path)
+    except Exception as exc:
+        _issue(
+            issues,
+            "error",
+            f"{kind}_decryption_failed",
+            f"{kind.title()} file could not be read or decrypted: {exc}",
+            **context,
+        )
+        return
     if actual_checksum != expected_checksum:
         _issue(
             issues,
@@ -173,6 +194,45 @@ def _check_file_references(issues, document_names, versions):
             )
 
 
+def _check_orphaned_derived_records(issues, document_names, version_names):
+    if frappe.db.exists("DocType", "Document Page"):
+        pages = frappe.get_all(
+            "Document Page",
+            fields=["name", "document", "document_version"],
+            limit_page_length=0,
+        )
+        for page in pages:
+            if page.document not in document_names or (
+                page.document_version and page.document_version not in version_names
+            ):
+                _issue(
+                    issues,
+                    "warning",
+                    "orphaned_document_page",
+                    "Document Page references a missing document or version.",
+                    page=page.name,
+                    document=page.document,
+                    version=page.document_version,
+                )
+
+    if frappe.db.exists("DocType", "Document Chunk"):
+        chunks = frappe.get_all(
+            "Document Chunk",
+            fields=["name", "document"],
+            limit_page_length=0,
+        )
+        for chunk in chunks:
+            if chunk.document not in document_names:
+                _issue(
+                    issues,
+                    "warning",
+                    "orphaned_document_chunk",
+                    "Document Chunk references a missing document.",
+                    chunk=chunk.name,
+                    document=chunk.document,
+                )
+
+
 def _physical_file_url(path, root, private):
     relative = path.relative_to(root).as_posix()
     prefix = "/private/files" if private else "/files"
@@ -190,35 +250,34 @@ def _check_physical_orphans(issues):
         )
         if row.file_url
     }
-    roots = (
-        (Path(frappe.get_site_path("private", "files")), True),
-        (Path(frappe.get_site_path("public", "files")), False),
-    )
-    for root, private in roots:
-        if not root.is_dir():
+    # Scope to private/files where Document Management stores all attachments
+    # to avoid false positives from public site/website assets of other apps.
+    private_root = Path(frappe.get_site_path("private", "files"))
+    if not private_root.is_dir():
+        return
+    for path in private_root.rglob("*"):
+        if not path.is_file() or path.name.startswith("."):
             continue
-        for path in root.rglob("*"):
-            if not path.is_file() or path.name.startswith("."):
-                continue
-            file_url = _physical_file_url(path, root, private)
-            if unquote(file_url) in known_urls:
-                continue
-            _issue(
-                issues,
-                "warning",
-                "physical_file_orphaned",
-                "Physical file has no matching File record.",
-                file_url=file_url,
-                path=str(path),
-            )
+        file_url = _physical_file_url(path, private_root, True)
+        if unquote(file_url) in known_urls:
+            continue
+        _issue(
+            issues,
+            "warning",
+            "physical_file_orphaned",
+            "Physical file has no matching File record.",
+            file_url=file_url,
+            path=str(path),
+        )
 
 
 def check_document_archive():
     issues = []
+    encryption_expected = file_encryption_enabled()
     documents = frappe.get_all(
         "Document",
         filters=standalone_filters(),
-        fields=["name", "ocr_status", "ocr_content", "is_deleted"],
+        fields=["name", "ocr_status", "is_deleted"],
         limit_page_length=0,
     )
     versions = frappe.get_all(
@@ -232,9 +291,18 @@ def check_document_archive():
             "preview_attachment",
             "preview_checksum",
             "ocr_status",
-            "ocr_content",
         ],
         limit_page_length=0,
+    )
+    empty_completed_ocr = set(
+        frappe.db.sql(
+            """
+            SELECT name FROM `tabDocument Version`
+            WHERE ocr_status = 'Completed'
+              AND TRIM(COALESCE(ocr_content, '')) = ''
+            """,
+            pluck="name",
+        )
     )
     document_names = {row.name for row in documents}
     versions_by_name = {row.name: row for row in versions}
@@ -280,6 +348,7 @@ def check_document_archive():
             file_url=version.attachment,
             expected_checksum=version.file_checksum,
             kind="original",
+            check_encryption=encryption_expected,
             **context,
         )
         _check_stored_file(
@@ -287,9 +356,10 @@ def check_document_archive():
             file_url=version.preview_attachment,
             expected_checksum=version.preview_checksum,
             kind="preview",
+            check_encryption=encryption_expected,
             **context,
         )
-        if version.ocr_status == "Completed" and not (version.ocr_content or "").strip():
+        if version.ocr_status == "Completed" and version.name in empty_completed_ocr:
             _issue(
                 issues,
                 "warning",
@@ -299,6 +369,7 @@ def check_document_archive():
             )
 
     _check_file_references(issues, document_names, versions_by_name)
+    _check_orphaned_derived_records(issues, document_names, set(versions_by_name))
     _check_physical_orphans(issues)
     counts = {
         "error": sum(issue["severity"] == "error" for issue in issues),

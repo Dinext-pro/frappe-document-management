@@ -2077,3 +2077,386 @@ msgstr ""
 msgid "user"
 msgstr ""
 
+msgid "Check System Health"
+msgstr ""
+
+msgid "Document Management System Health"
+msgstr ""
+
+msgid "System Binaries"
+msgstr ""
+
+msgid "Search & RAG Indexes"
+msgstr ""
+
+msgid "Full-text (Tantivy)"
+msgstr ""
+
+msgid "RAG Index"
+msgstr ""
+
+msgid "AI Endpoints"
+msgstr ""
+
+msgid "Missing / Error"
+msgstr ""
+
+msgid "Advanced Search Syntax"
+msgstr ""
+
+msgid "Advanced search syntax"
+msgstr ""
+
+msgid "Not enough evidence was found in the available documents."
+msgstr ""
+
+msgid "Document permissions changed while generating the answer. Please ask the question again."
+msgstr ""
+
+msgid "Unable to generate a response. Check the AI provider configuration."
+msgstr ""
+
+msgid "Preview unavailable"
+msgstr ""
+
+msgid "Use the Download button to open this file."
+msgstr ""
+
+msgid "Could not load preview."
+msgstr ""
+
+msgid "Could not load the PDF viewer."
+msgstr ""
+
+msgid "Loading document..."
+msgstr ""
+
+msgid "Protected Document"
+msgstr ""
+
+msgid "Passcode Required"
+msgstr ""
+
+msgid "Enter the passcode to view this shared document."
+msgstr ""
+
+msgid "Invalid passcode. Please try again."
+msgstr ""
+
+msgid "Passcode"
+msgstr ""
+
+msgid "Unlock Document"
+msgstr ""
+
+msgid "Maximum views (0 = unlimited)"
+msgstr ""
+
+msgid "Passcode (optional, min 4 chars)"
+msgstr ""
+
+msgid "Export Markdown"
+msgstr ""
+
+msgid "From Date"
+msgstr ""
+
+msgid "To Date"
+msgstr ""
+
+msgid "Clear Filters"
+msgstr ""
+
+msgid "Copy"
+msgstr ""
+
+msgid "Copied to clipboard"
+msgstr ""
+
+msgid "Unable to copy to clipboard."
+msgstr ""
+
+msgid "Version History"
+msgstr ""
+
+msgid "Quick Edit"
+msgstr ""
+
+msgid "View OCR Text"
+msgstr ""
+
+msgid "No OCR text extracted yet."
+msgstr ""
+
+msgid "Rotate clockwise"
+msgstr ""
+
+msgid "Go to page"
+msgstr ""
+
+msgid "Sort: Most recent"
+msgstr ""
+
+msgid "Sort: Oldest"
+msgstr ""
+
+msgid "Sort: Title A-Z"
+msgstr ""
+
+msgid "Sort: Title Z-A"
+msgstr ""
+
+msgid "Sort: Code"
+msgstr ""
+
+msgid "Sort: Created"
+msgstr ""
+
+msgid "(Optional)"
+msgstr ""
+
+msgid "Preview version"
+msgstr ""
+
+msgid "Sorted by search relevance"
+msgstr ""
+
+msgid "Expiry & Review Reminder Window (Days)"
+msgstr ""
+
+msgid "Send Expiry Email Reminders"
+msgstr ""
+
+msgid "Maintenance"
+msgstr ""
+
+msgid "Run Archive Sanity Check"
+msgstr ""
+
+msgid "Checking document archive integrity..."
+msgstr ""
+
+msgid "Archive Sanity Check"
+msgstr ""
+
+msgid "Documents checked"
+msgstr ""
+
+msgid "Versions checked"
+msgstr ""
+
+msgid "Errors"
+msgstr ""
+
+msgid "Warnings"
+msgstr ""
+
+msgid "Severity"
+msgstr ""
+
+msgid "Target"
+msgstr ""
+
+msgid "Message"
+msgstr ""
+
+msgid "Showing first 100 issues."
+msgstr ""
+
+msgid "No archive integrity issues found."
+msgstr ""
+
+msgid "Encrypt Existing Files"
+msgstr ""
+
+msgid "Encrypt all unencrypted private Document files in the background using the site encryption key?"
+msgstr ""
+
+msgid "Background encryption job queued"
+msgstr ""
+
+msgid "Storage & Ingestion"
+msgstr ""
+
+msgid "File Encryption at Rest"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "File (Drag & Drop)"
+msgstr ""
+
+msgid "Search indexed operational records. Supports \"exact phrases\", -exclusions, prefixes, and typo tolerance."
+msgstr ""
+
+msgid "Search customers, invoices, loans, or \"exact phrase\" -exclude..."
+msgstr ""
+
+msgid "Clear search (Esc)"
+msgstr ""
+
+msgid "Relevance"
+msgstr ""
+
+msgid "Most recent"
+msgstr ""
+
+msgid "Oldest"
+msgstr ""
+
+msgid "Title A-Z"
+msgstr ""
+
+msgid "From"
+msgstr ""
+
+msgid "To"
+msgstr ""
+
+msgid "Per page"
+msgstr ""
+
+msgid "Reset filters"
+msgstr ""
+
+msgid "Enter a query to search the configured indexes."
+msgstr ""
+
+msgid "Tip: Press / to focus, Up/Down to navigate results, Enter to open, Esc to clear."
+msgstr ""
+
+msgid "Index Status"
+msgstr ""
+
+msgid "Indexed DocTypes Search Status"
+msgstr ""
+
+msgid "Indexed DocTypes Search index rebuilt"
+msgstr ""
+
+msgid "Ready"
+msgstr ""
+
+msgid "Rebuild Required"
+msgstr ""
+
+msgid "Total Indexed"
+msgstr ""
+
+msgid "Last Rebuilt"
+msgstr ""
+
+msgid "Generation"
+msgstr ""
+
+msgid "DocType"
+msgstr ""
+
+msgid "No DocTypes configured for indexing."
+msgstr ""
+
+msgid "Rebuild Index Now"
+msgstr ""
+
+msgid "Recent:"
+msgstr ""
+
+msgid "Clear history"
+msgstr ""
+
+msgid "Similar match"
+msgstr ""
+
+msgid "Modified"
+msgstr ""
+
+msgid "Index Comments"
+msgstr ""
+
+msgid "Index PDF Attachments"
+msgstr ""
+
+msgid "Excluded Fields"
+msgstr ""
+
+msgid "Search Syntax & Shortcuts"
+msgstr ""
+
+msgid "Match an exact phrase across title, ID, content, or comments"
+msgstr ""
+
+msgid "Exclude records containing a specific term"
+msgstr ""
+
+msgid "Prefix matching on record IDs and titles"
+msgstr ""
+
+msgid "Automatic typo-tolerant fallback when no exact matches exist"
+msgstr ""
+
+msgid "Keyboard shortcuts"
+msgstr ""
+
+msgid "focus search"
+msgstr ""
+
+msgid "navigate results"
+msgstr ""
+
+msgid "open record"
+msgstr ""
+
+msgid "open in new tab"
+msgstr ""
+
+msgid "clear search"
+msgstr ""
+
+msgid "No exact matches found. Showing similar results."
+msgstr ""
+
+msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
+msgstr ""
+
+msgid "Search indexed operational records. Supports exact phrases, exclusions, prefixes, and typo tolerance."
+msgstr ""
+
+msgid "Search customers, invoices, loans, or exact phrases..."
+msgstr ""
+
+msgid "preview record"
+msgstr ""
+
+msgid "Open Record"
+msgstr ""
+
+msgid "Open Row in Record"
+msgstr ""
+
+msgid "Open in New Tab"
+msgstr ""
+
+msgid "Loading record preview..."
+msgstr ""
+
+msgid "Unable to load record preview."
+msgstr ""
+
+msgid "Matched Child Row"
+msgstr ""
+
+msgid "Matched Child Rows ({0})"
+msgstr ""
+
+msgid "Full Record"
+msgstr ""
+
+msgid "Child Table Row: {0} (#{1})"
+msgstr ""
+
+msgid "Matching Comments"
+msgstr ""
+
+msgid "No visible fields to display."
+msgstr ""

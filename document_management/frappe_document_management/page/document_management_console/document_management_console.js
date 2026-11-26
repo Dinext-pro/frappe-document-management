@@ -9,7 +9,11 @@ frappe.pages['document-management-console'].on_page_load = function(wrapper) {
 };
 
 frappe.pages['document-management-console'].on_page_show = function(wrapper) {
-    wrapper.document_management_console?.on_show?.();
+    wrapper.document_management_console?.on_page_show?.();
+};
+
+frappe.pages['document-management-console'].on_page_hide = function(wrapper) {
+    wrapper.document_management_console?.on_page_hide?.();
 };
 
 function markdown_anchor_slug(value) {
@@ -22,6 +26,9 @@ function markdown_anchor_slug(value) {
 }
 
 async function upload_document_file(file, method, fields) {
+    if (frappe.document_management && frappe.document_management.upload_document_file) {
+        return frappe.document_management.upload_document_file(file, method, fields);
+    }
     const form_data = new FormData();
     form_data.append('file', file, file.name);
     form_data.append('is_private', '1');
@@ -47,46 +54,41 @@ class DocumentManagementConsole {
         this.wrapper = $(wrapper).find('.layout-main-section');
         this.page = page;
         this.provider = frappe.document_management?.console_adapter;
-        if (this.provider) {
-            // Frappe appends page_js before calling on_page_load.
-            Promise.resolve().then(() => this.provider.prepare?.()).then(() => this.init_vue()).catch(() => {
-                this.wrapper.text(__('The document console could not be loaded.'));
-            });
-            return;
-        }
 
-        if (typeof Vue === 'undefined') {
-            frappe.require("https://unpkg.com/vue@3/dist/vue.global.prod.js", () => {
-                this.load_pdf_viewer();
-            });
+        const deps = [];
+        if (!window.Vue?.compile) {
+            deps.push("/assets/document_management/js/vendor/vue.global.prod.js");
+        }
+        if (!window.DOMPurify) {
+            deps.push("/assets/document_management/js/vendor/purify.min.js");
+        }
+        if (!window.marked) {
+            deps.push("/assets/document_management/js/vendor/marked.min.js");
+        }
+        if (deps.length) {
+            frappe.require(deps, () => this.load_pdf_viewer());
         } else {
             this.load_pdf_viewer();
         }
     }
 
     load_pdf_viewer() {
-        const viewer_version = "5.7.284-9";
-        const load_marked = () => {
-            if (window.marked) {
-                this.init_vue();
-            } else {
-                frappe.require("https://cdn.jsdelivr.net/npm/marked/marked.min.js", () => this.init_vue());
-            }
-        };
-
+        const start = () => Promise.resolve(this.provider?.prepare?.()).then(() => this.init_vue()).catch(() => {
+            this.wrapper.text(__('The document console could not be loaded.'));
+        });
+        const viewer_version = "5.7.284-10";
         if (window.LoanManagerPdfSearchViewer?.version === viewer_version) {
-            load_marked();
+            start();
             return;
         }
         frappe.require(
-            "/assets/document_management/js/pdf_search_viewer.v5_7_284_9.js",
-            () => load_marked(),
+            "/assets/document_management/js/pdf_search_viewer.v5_7_284_10.js",
+            start,
         );
     }
 
     init_vue() {
         const provider = this.provider;
-        const console_page = this;
         const template = `
             <div class="paperless-app" :class="{'sidebar-open': selected_doc}">
                 <!-- Toolbar -->
@@ -94,6 +96,9 @@ class DocumentManagementConsole {
                     <div class="search-box">
                         <i class="fa fa-search search-icon"></i>
                         <input type="text" :placeholder="'${__('Search documents...')}'" v-model="filters.search" @input="debounce_fetch" />
+                        <button type="button" class="search-help-btn" @click="show_search_help" :title="'${__('Advanced search syntax')}'">
+                            <i class="fa fa-question-circle"></i>
+                        </button>
                     </div>
                     <div class="filter-box categories-dropdown-container">
                         <button class="categories-dropdown-btn" @click.stop="toggle_category_dropdown">
@@ -109,7 +114,7 @@ class DocumentManagementConsole {
                             </div>
                             <div class="categories-dropdown-list">
                                 <label v-for="cat in categories" :key="cat.name" class="category-filter-item">
-                                    <input type="checkbox" :value="cat.name" v-model="filters.categories" @change="fetch_documents" />
+                                    <input type="checkbox" :value="cat.name" v-model="filters.categories" @change="fetch_documents(true)" />
                                     <span class="category-name">{{ cat.name }}</span>
                                 </label>
                             </div>
@@ -130,15 +135,15 @@ class DocumentManagementConsole {
                             </div>
                             <div class="statuses-dropdown-list">
                                 <label class="status-filter-item">
-                                    <input type="checkbox" value="Draft" v-model="filters.statuses" @change="fetch_documents" />
+                                    <input type="checkbox" value="Draft" v-model="filters.statuses" @change="fetch_documents(true)" />
                                     <span class="status-name">${__('Draft')}</span>
                                 </label>
                                 <label class="status-filter-item">
-                                    <input type="checkbox" value="Published" v-model="filters.statuses" @change="fetch_documents" />
+                                    <input type="checkbox" value="Published" v-model="filters.statuses" @change="fetch_documents(true)" />
                                     <span class="status-name">${__('Published')}</span>
                                 </label>
                                 <label class="status-filter-item">
-                                    <input type="checkbox" value="Obsolete" v-model="filters.statuses" @change="fetch_documents" />
+                                    <input type="checkbox" value="Obsolete" v-model="filters.statuses" @change="fetch_documents(true)" />
                                     <span class="status-name">${__('Obsolete')}</span>
                                 </label>
                             </div>
@@ -158,7 +163,7 @@ class DocumentManagementConsole {
                             </div>
                             <div class="tags-dropdown-list">
                                 <label v-for="tag in tags" :key="tag.name" class="tag-filter-item">
-                                    <input type="checkbox" :value="tag.name" v-model="filters.tags" @change="fetch_documents" />
+                                    <input type="checkbox" :value="tag.name" v-model="filters.tags" @change="fetch_documents(true)" />
                                     <span class="tag-color-indicator" :style="{ backgroundColor: tag.color || '#ccc' }"></span>
                                     <span class="tag-name">{{ tag.name }}</span>
                                 </label>
@@ -178,13 +183,23 @@ class DocumentManagementConsole {
                             <i class="fa fa-times"></i>
                         </button>
                     </div>
+                    <div class="filter-box">
+                        <select v-model="sort_by" @change="fetch_documents(true)" :aria-label="'${__('Sort')}'" :disabled="sort_disabled" :title="provider && sort_disabled ? '${__('Sorting is fixed in this view')}' : sort_disabled ? '${__('Sorted by search relevance')}' : '${__('Sort')}'">
+                            <option value="modified_desc">${__('Sort: Most recent')}</option>
+                            <option value="modified_asc">${__('Sort: Oldest')}</option>
+                            <option value="title_asc">${__('Sort: Title A-Z')}</option>
+                            <option value="title_desc">${__('Sort: Title Z-A')}</option>
+                            <option value="document_code_asc">${__('Sort: Code')}</option>
+                            <option value="creation_desc">${__('Sort: Created')}</option>
+                        </select>
+                    </div>
                     <button class="btn-refresh" @click="fetch_documents">
                         <i class="fa fa-refresh"></i>
                     </button>
                     <button v-if="!provider" class="btn-refresh" :class="{active: trash_mode}" @click="toggle_trash">
                         <i class="fa fa-trash"></i> {{ trash_mode ? '${__('Documents')}' : '${__('Trash')}' }}
                     </button>
-                    <span class="doc-count" :style="{ visibility: loading ? 'hidden' : 'visible' }">{{ documents.length }} ${__('documents')}</span>
+                    <span class="doc-count" :style="{ visibility: loading ? 'hidden' : 'visible' }">{{ total_documents ?? documents.length }} {{ total_documents == null ? '${__('documents on this page')}' : '${__('documents')}' }}</span>
                     <div class="view-toggles">
                         <button class="btn" :class="{active: view_mode==='grid'}" @click="view_mode='grid'" :title="'${__('Grid View')}'"><i class="fa fa-th"></i></button>
                         <button class="btn" :class="{active: view_mode==='large'}" @click="view_mode='large'" :title="'${__('List Cards')}'"><i class="fa fa-th-list"></i></button>
@@ -224,7 +239,6 @@ class DocumentManagementConsole {
                     <div class="paperless-content">
 
                         <component v-if="extensions.list_status" :is="extensions.list_status"></component>
-
                         <!-- Skeleton Loading -->
                         <div v-if="loading" class="skeleton-grid">
                             <div v-for="n in 8" class="skeleton-card">
@@ -250,7 +264,10 @@ class DocumentManagementConsole {
                                  :data-type="get_file_type(doc)"
                                  @click="select_doc(doc)">
                                 <div class="doc-icon-wrapper" :class="get_icon_class(doc)">
-                                    <i class="fa" :class="get_icon(doc)"></i>
+                                    <svg class="doc-type-icon" viewBox="0 0 32 38" aria-hidden="true" focusable="false">
+                                        <path d="M5 1.5h15l7 7v28H5z M20 1.5v7h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                                        <text x="16" y="26" text-anchor="middle">{{ get_icon(doc) }}</text>
+                                    </svg>
                                 </div>
                                 <div class="doc-title">{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></div>
                                 <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
@@ -279,11 +296,14 @@ class DocumentManagementConsole {
                                  @click="select_doc(doc)">
                                 <input v-if="!provider" class="document-selector inline" type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" />
                                 <div class="doc-icon-wrapper" :class="get_icon_class(doc)">
-                                    <i class="fa" :class="get_icon(doc)"></i>
+                                    <svg class="doc-type-icon" viewBox="0 0 32 38" aria-hidden="true" focusable="false">
+                                        <path d="M5 1.5h15l7 7v28H5z M20 1.5v7h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                                        <text x="16" y="26" text-anchor="middle">{{ get_icon(doc) }}</text>
+                                    </svg>
                                 </div>
                                 <div class="large-card-body">
                                     <div class="doc-title">{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></div>
-                                    <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
+                                <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                     <div class="doc-meta-row">
                                         <span v-if="doc.document_code" class="doc-meta-item"><i class="fa fa-hashtag"></i> {{ doc.document_code }}</span>
                                         <span v-if="doc.ocr_status === 'Pending' || doc.ocr_status === 'Processing'" class="doc-meta-item" style="color: var(--pc-primary);"><i class="fa fa-spinner fa-spin"></i> ${__('OCR')}</span>
@@ -320,13 +340,13 @@ class DocumentManagementConsole {
                                         :class="{active: selected_doc && selected_doc.name === doc.name, selected: is_selected(doc.name)}"
                                         @click="select_doc(doc)">
                                         <td v-if="!provider"><input type="checkbox" :checked="is_selected(doc.name)" @click.stop="toggle_selection(doc.name)" /></td>
-                                        <td><span class="list-icon" :class="get_icon_class(doc)"><i class="fa" :class="get_icon(doc)"></i></span></td>
+                                        <td><span class="list-icon" :class="get_icon_class(doc)"><svg class="doc-type-icon" viewBox="0 0 32 38" aria-hidden="true" focusable="false"><path d="M5 1.5h15l7 7v28H5z M20 1.5v7h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" /><text x="16" y="26" text-anchor="middle">{{ get_icon(doc) }}</text></svg></span></td>
                                         <td>
                                             <strong>{{ doc.document_name }} <small class="text-muted" style="font-weight: normal;">({{ doc.name }})</small></strong>
+                                            <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                             <span v-if="doc.ocr_status === 'Pending' || doc.ocr_status === 'Processing'" style="display: block; font-size: 11px; margin-top: 2px; color: var(--pc-primary);"><i class="fa fa-spinner fa-spin"></i> ${__('Processing OCR')}</span>
                                             <span v-if="doc.document_code" class="text-muted" style="display: block; font-size: 11px; margin-top: 2px;"><i class="fa fa-hashtag"></i> {{ doc.document_code }}</span>
                                             <span v-if="doc.party_name" class="text-muted" style="display: block; font-size: 11px; margin-top: 2px;"><i class="fa fa-handshake-o"></i> {{ doc.party_name }}</span>
-                                            <component v-if="extensions.row_indicator" :is="extensions.row_indicator" :document="doc"></component>
                                             <span v-if="filters.search && doc.search_excerpt" class="search-excerpt">
                                                 <span v-if="doc.search_page">${__('Page')} {{ doc.search_page }}: </span><span v-html="highlight_text(doc.search_excerpt, doc.search_terms)"></span>
                                             </span>
@@ -342,14 +362,27 @@ class DocumentManagementConsole {
                                 </tbody>
                             </table>
                         </div>
+
                         <component v-if="extensions.list_footer" :is="extensions.list_footer"></component>
+                        <!-- Pagination -->
+                        <nav v-if="!extensions.list_footer && !loading && (current_page > 1 || has_more)" class="paperless-pagination" :aria-label="'${__('Document pages')}'">
+                            <button class="btn btn-sm btn-default" :disabled="current_page <= 1" @click="go_to_page(current_page - 1)">
+                                <i class="fa fa-chevron-left"></i> ${__('Previous')}
+                            </button>
+                            <span class="pagination-info" aria-live="polite">
+                                ${__('Page')} {{ current_page }}<template v-if="total_pages > 1"> / {{ total_pages }}</template>
+                            </span>
+                            <button class="btn btn-sm btn-default" :disabled="!has_more" @click="go_to_page(current_page + 1)">
+                                ${__('Next')} <i class="fa fa-chevron-right"></i>
+                            </button>
+                        </nav>
                     </div>
 
                     <!-- Right: Sidebar -->
                     <div class="paperless-sidebar" v-if="selected_doc" :class="sidebar_class" :key="selected_doc.name">
                         <div class="sidebar-header">
                             <h4>{{ selected_doc.document_name }}</h4>
-                            <button class="btn-close-sidebar" @click="selected_doc = null"><i class="fa fa-times"></i></button>
+                            <button class="btn-close-sidebar" @click="select_doc(null)"><i class="fa fa-times"></i></button>
                         </div>
                         <div class="sidebar-body">
                             <component v-if="extensions.sidebar_top" :is="extensions.sidebar_top"></component>
@@ -366,6 +399,7 @@ class DocumentManagementConsole {
                                         <strong>${__('Preview Notice:')}</strong> ${__('You are viewing an automatically generated preview from an Office file. Some complex formatting or design elements might not display with 100% accuracy. For perfect fidelity, we recommend downloading the original file from the sidebar.')}
                                     </div>
                                     <loan-pdf-viewer
+                                        :key="selected_doc.document_download || selected_doc.document_file"
                                         :src="selected_doc.document_download || selected_doc.document_file"
                                         :query="filters.search"
                                         :terms="selected_doc.search_terms || []"
@@ -424,6 +458,7 @@ class DocumentManagementConsole {
                                                 <strong>${__('Preview Notice:')}</strong> ${__('You are viewing an automatically generated preview from an Office file. Some complex formatting or design elements might not display with 100% accuracy. For perfect fidelity, we recommend downloading the original file from the sidebar.')}
                                             </div>
                                             <loan-pdf-viewer
+                                                :key="selected_doc.document_download || selected_doc.document_file"
                                                 :src="selected_doc.document_download || selected_doc.document_file"
                                                 :query="filters.search"
                                                 :terms="selected_doc.search_terms || []"
@@ -520,6 +555,20 @@ class DocumentManagementConsole {
                                         </div>
                                     </div>
                                 </div>
+                                <div class="meta-item" v-if="selected_doc.expiry_date">
+                                    <div class="meta-icon"><i class="fa fa-calendar-times-o"></i></div>
+                                    <div class="meta-content">
+                                        <div class="meta-label">${__('Expiry Date')}</div>
+                                        <div class="meta-value">{{ format_date(selected_doc.expiry_date) }}</div>
+                                    </div>
+                                </div>
+                                <div class="meta-item" v-if="selected_doc.review_date">
+                                    <div class="meta-icon"><i class="fa fa-calendar-check-o"></i></div>
+                                    <div class="meta-content">
+                                        <div class="meta-label">${__('Review Date')}</div>
+                                        <div class="meta-value">{{ format_date(selected_doc.review_date) }}</div>
+                                    </div>
+                                </div>
                                 <div class="meta-item" v-if="selected_doc.tags && selected_doc.tags.length > 0">
                                     <div class="meta-icon"><i class="fa fa-tags"></i></div>
                                     <div class="meta-content">
@@ -531,10 +580,39 @@ class DocumentManagementConsole {
                                 </div>
                             </div>
                             <component v-if="extensions.sidebar_bottom" :is="extensions.sidebar_bottom"></component>
+                            <div class="doc-versions-section" v-if="!provider && selected_versions.length">
+                                <div class="meta-label" style="margin: 12px 0 6px; font-weight: 600;">${__('Version History')} ({{ selected_versions.length }})</div>
+                                <div class="version-history-list">
+                                    <div v-for="ver in selected_versions" :key="ver.name" class="version-history-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--pc-border-light);border-radius:6px;margin-bottom:6px;font-size:12px;">
+                                        <div style="min-width:0;">
+                                            <strong>v{{ ver.version_number }}</strong>
+                                            <span class="text-muted" v-if="ver.release_date"> · {{ format_date(ver.release_date) }}</span>
+                                            <div class="text-muted" v-if="ver.change_log" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ver.change_log }}</div>
+                                        </div>
+                                        <div style="display:flex;gap:4px;flex-shrink:0;">
+                                            <button v-if="ver.preview_url || ver.download_url" class="btn btn-xs btn-default" @click="preview_version(ver)" :title="'${__('Preview version')}'">
+                                                <i class="fa fa-eye"></i>
+                                            </button>
+                                            <a v-if="ver.download_url" :href="ver.download_url" target="_blank" class="btn btn-xs btn-default" :title="'${__('Download')}'">
+                                                <i class="fa fa-download"></i>
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                         <div class="sidebar-footer">
                             <component v-if="extensions.sidebar_actions" :is="extensions.sidebar_actions"></component>
                             <template v-if="!provider">
+                            <button v-if="!trash_mode" class="btn btn-default" @click="quick_edit_doc(selected_doc)">
+                                <i class="fa fa-pencil"></i> ${__('Quick Edit')}
+                            </button>
+                            <button v-if="!trash_mode" class="btn btn-default" @click="upload_new_version(selected_doc)">
+                                <i class="fa fa-upload"></i> ${__('Upload New Version')}
+                            </button>
+                            <button v-if="!trash_mode" class="btn btn-default" @click="view_ocr_text(selected_doc)">
+                                <i class="fa fa-align-left"></i> ${__('View OCR Text')}
+                            </button>
                             <button v-if="!trash_mode" class="btn btn-copy-link" @click="copy_link(selected_doc)">
                                 <i class="fa fa-clipboard"></i> ${__('Copy Link')}
                             </button>
@@ -576,50 +654,73 @@ class DocumentManagementConsole {
                                 <button class="pc-modal-close" @click="close_upload_modal"><i class="fa fa-times"></i></button>
                             </div>
                             <div class="pc-modal-body">
-                                <div class="pc-drop-zone" 
-                                     @dragover.prevent="dragover = true" 
-                                     @dragleave.prevent="dragover = false" 
+                                <div class="pc-drop-zone"
+                                     @dragover.prevent="dragover = true"
+                                     @dragleave.prevent="dragover = false"
                                      @drop.prevent="handle_drop"
                                      @click="$refs.fileInput.click()"
-                                     :class="{ dragover: dragover }"
-                                     v-if="!upload_form.file">
+                                     :class="{ dragover: dragover }">
                                     <div class="pc-drop-icon"><i class="fa fa-cloud-upload"></i></div>
                                     <p class="pc-drop-text">${__('Drag & Drop your file here or click to browse')}</p>
-                                    <input type="file" ref="fileInput" style="display: none" @change="handle_file_select">
+                                    <input type="file" ref="fileInput" multiple style="display: none" @change="handle_file_select">
                                 </div>
-                                <div v-else class="pc-file-preview">
-                                    <i class="fa fa-file-text-o"></i>
-                                    <div class="pc-file-name">{{ upload_form.file.name }}</div>
-                                    <button class="pc-file-remove" @click.prevent="remove_file"><i class="fa fa-times"></i></button>
+                                <div v-if="upload_form.files.length" style="margin-top: 10px; max-height: 120px; overflow-y: auto;">
+                                    <div v-for="(f, idx) in upload_form.files" :key="f.name + idx" class="pc-file-preview" style="margin-top: 6px;">
+                                        <i class="fa fa-file-text-o"></i>
+                                        <div class="pc-file-name">{{ f.name }}</div>
+                                        <button class="pc-file-remove" @click.prevent="remove_file(idx)"><i class="fa fa-times"></i></button>
+                                    </div>
                                 </div>
-                                
-                                <div class="pc-form-group">
+
+                                <div class="pc-form-group" v-if="upload_form.files.length <= 1">
                                     <label>${__('Document Code (Optional)')}</label>
                                     <input type="text" class="pc-form-control" v-model="upload_form.document_code" placeholder="${__('Leave blank to auto-generate')}">
                                 </div>
-                                <div class="pc-form-group">
+                                <div class="pc-form-group" v-if="upload_form.files.length <= 1">
                                     <label>${__('Title *')}</label>
                                     <input type="text" class="pc-form-control" v-model="upload_form.title" placeholder="${__('Document Title')}" required>
                                 </div>
                                 <div class="pc-form-group">
-                                    <label>${__('Category')} <span style="font-weight:normal;color:#888;">(Optional)</span></label>
+                                    <label>${__('Category')} <span style="font-weight:normal;color:#888;">${__('(Optional)')}</span></label>
                                     <select class="pc-form-control" v-model="upload_form.category">
                                         <option value="">${__('No Category')}</option>
                                         <option v-for="cat in categories" :value="cat.name">{{ cat.name }}</option>
                                     </select>
                                 </div>
                                 <div class="pc-form-group">
-                                    <label>${__('Folder')} <span style="font-weight:normal;color:#888;">(Optional)</span></label>
-                                    <select v-model="upload_form.folder" class="pc-input">
+                                    <label>${__('Status')}</label>
+                                    <select class="pc-form-control" v-model="upload_form.status">
+                                        <option value="Draft">${__('Draft')}</option>
+                                        <option value="Published">${__('Published')}</option>
+                                        <option value="Obsolete">${__('Obsolete')}</option>
+                                    </select>
+                                </div>
+                                <div class="pc-form-group">
+                                    <label>${__('Folder')} <span style="font-weight:normal;color:#888;">${__('(Optional)')}</span></label>
+                                    <select v-model="upload_form.folder" class="pc-form-control">
                                         <option value="">${__('Home/Attachments (Default)')}</option>
                                         <option v-for="fld in folders" :value="fld.folder_name">{{ fld.file_name }}</option>
                                     </select>
                                 </div>
-                                <!-- Tags simplified as comma separated for now -->
+                                <div class="pc-form-group" v-if="tags.length">
+                                    <label>${__('Tags')} <span style="font-weight:normal;color:#888;">${__('(Optional)')}</span></label>
+                                    <div style="display:flex;flex-wrap:wrap;gap:6px;max-height:90px;overflow-y:auto;">
+                                        <label v-for="tag in tags" :key="tag.name" style="display:inline-flex;align-items:center;gap:4px;font-weight:normal;margin:0;cursor:pointer;">
+                                            <input type="checkbox" :value="tag.name" v-model="upload_form.tags" />
+                                            <span class="keyword-badge tag-colored" :style="[get_tag_style(tag.color), {fontSize:'11px',padding:'1px 6px',margin:0}]">{{ tag.name }}</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="pc-form-group">
+                                    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                                        <input type="checkbox" v-model="upload_form.only_me" />
+                                        <span>${__('Only Me')}</span>
+                                    </label>
+                                </div>
                             </div>
                             <div class="pc-modal-footer">
                                 <button class="btn btn-default" @click="close_upload_modal">${__('Cancel')}</button>
-                                <button class="btn-upload" @click="submit_upload" :disabled="!upload_form.file || !upload_form.title || is_uploading">
+                                <button class="btn-upload" @click="submit_upload" :disabled="!upload_form.files.length || (upload_form.files.length === 1 && !upload_form.title) || is_uploading">
                                     <i class="fa fa-spinner fa-spin" v-if="is_uploading"></i>
                                     <i class="fa fa-upload" v-else></i>
                                     {{ is_uploading ? '${__('Uploading...')}' : '${__('Upload & Save')}' }}
@@ -636,6 +737,7 @@ class DocumentManagementConsole {
 
         const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount } = Vue;
 
+        const console_controller = this;
         const app = createApp({
             setup() {
                 const route_params = new URLSearchParams(window.location.search);
@@ -643,9 +745,16 @@ class DocumentManagementConsole {
                 const requested_query = (route_params.get('query') || '').trim();
                 const requested_page = Number(route_params.get('page')) || null;
                 const documents = ref([]);
+                const current_page = ref(1);
+                const page_size = provider?.page_size || 50;
+                const total_documents = ref(0);
+                const has_more = ref(false);
+                const sort_by = ref('modified_desc');
+                const total_pages = computed(() => Math.max(1, Math.ceil((total_documents.value || 0) / page_size)));
                 const categories = ref([]);
                 const tags = ref([]);
                 const selected_doc = ref(null);
+                const selected_versions = ref([]);
                 const department_available = ref(true);
                 const view_mode = ref('grid');
                 const loading = ref(false);
@@ -688,15 +797,15 @@ class DocumentManagementConsole {
 
                 const clear_categories = () => {
                     filters.categories = [];
-                    fetch_documents();
+                    fetch_documents(true);
                 };
                 const clear_statuses = () => {
                     filters.statuses = [];
-                    fetch_documents();
+                    fetch_documents(true);
                 };
                 const clear_tags = () => {
                     filters.tags = [];
-                    fetch_documents();
+                    fetch_documents(true);
                 };
 
                 const handle_window_click = (e) => {
@@ -715,68 +824,102 @@ class DocumentManagementConsole {
                 const is_uploading = ref(false);
                 const dragover = ref(false);
                 const upload_form = reactive({
-                    file: null,
+                    files: [],
                     title: '',
                     category: '',
+                    status: 'Draft',
                     folder: '',
-                    document_code: ''
+                    document_code: '',
+                    tags: [],
+                    only_me: false
                 });
 
                 const folders = ref([]);
 
                 const close_upload_modal = () => {
                     show_upload_modal.value = false;
-                    upload_form.file = null;
+                    upload_form.files = [];
                     upload_form.title = '';
                     upload_form.category = '';
+                    upload_form.status = 'Draft';
                     upload_form.folder = '';
                     upload_form.document_code = '';
+                    upload_form.tags = [];
+                    upload_form.only_me = false;
+                };
+
+                const add_files = (file_list) => {
+                    const incoming = Array.from(file_list || []);
+                    if (!incoming.length) return;
+                    upload_form.files = [...upload_form.files, ...incoming];
+                    if (upload_form.files.length === 1 && !upload_form.title) {
+                        upload_form.title = upload_form.files[0].name.replace(/\.[^/.]+$/, "");
+                    }
                 };
 
                 const handle_drop = (e) => {
                     dragover.value = false;
-                    const files = e.dataTransfer.files;
-                    if (files.length > 0) {
-                        set_file(files[0]);
-                    }
+                    add_files(e.dataTransfer.files);
                 };
 
                 const handle_file_select = (e) => {
-                    const files = e.target.files;
-                    if (files.length > 0) {
-                        set_file(files[0]);
-                    }
+                    add_files(e.target.files);
+                    if (e.target) e.target.value = '';
                 };
 
-                const set_file = (f) => {
-                    upload_form.file = f;
-                    if (!upload_form.title) {
-                        upload_form.title = f.name.replace(/\.[^/.]+$/, "");
-                    }
-                };
-
-                const remove_file = () => {
-                    upload_form.file = null;
+                const remove_file = (index) => {
+                    upload_form.files.splice(index, 1);
                 };
 
                 const submit_upload = async () => {
-                    if (!upload_form.file || !upload_form.title) return;
+                    if (!upload_form.files.length) return;
+                    if (upload_form.files.length === 1 && !upload_form.title) return;
                     is_uploading.value = true;
 
+                    let uploaded = 0;
+                    const errors = [];
                     try {
-                        await upload_document_file(
-                            upload_form.file,
-                            'document_management.frappe_document_management.page.document_management_console.document_management_console.quick_upload',
-                            {
-                                title: upload_form.title,
-                                category: upload_form.category,
-                                folder: upload_form.folder || '',
-                                document_code: upload_form.document_code || ''
+                        for (const file of upload_form.files) {
+                            const doc_title = upload_form.files.length === 1
+                                ? upload_form.title
+                                : file.name.replace(/\.[^/.]+$/, "");
+                            try {
+                                await upload_document_file(
+                                    file,
+                                    'document_management.frappe_document_management.page.document_management_console.document_management_console.quick_upload',
+                                    {
+                                        title: doc_title,
+                                        category: upload_form.category,
+                                        status: upload_form.status || 'Draft',
+                                        folder: upload_form.folder || '',
+                                        document_code: upload_form.files.length === 1 ? (upload_form.document_code || '') : '',
+                                        tags: JSON.stringify(upload_form.tags || []),
+                                        only_me: upload_form.only_me ? '1' : '0'
+                                    }
+                                );
+                                uploaded += 1;
+                            } catch (err) {
+                                errors.push(`${file.name}: ${err?.message || __('Upload failed')}`);
                             }
-                        );
-                        frappe.show_alert({message: __('Document uploaded successfully'), indicator: 'green'});
-                        close_upload_modal();
-                        fetch_documents();
+                        }
+                        if (uploaded > 0) {
+                            frappe.show_alert({
+                                message: uploaded === 1
+                                    ? __('Document uploaded successfully')
+                                    : __('Uploaded {0} documents', [uploaded]),
+                                indicator: 'green'
+                            });
+                            fetch_documents(true);
+                        }
+                        if (errors.length) {
+                            frappe.msgprint({
+                                title: __('Some uploads failed'),
+                                indicator: 'red',
+                                message: errors.map((e) => `<div>${escape_html(e)}</div>`).join('')
+                            });
+                        } else {
+                            close_upload_modal();
+                        }
                     } finally {
                         is_uploading.value = false;
                     }
@@ -786,8 +929,11 @@ class DocumentManagementConsole {
                 let realtimeRefreshTimer;
                 const realtime_event = 'document_management_document_changed';
 
-                const fetch_documents = () => {
-                    if (provider) return adapter.load_documents();
+                const fetch_documents = (reset_page = false) => {
+                    if (provider) return adapter.load_documents(reset_page === true);
+                    if (reset_page === true) {
+                        current_page.value = 1;
+                    }
                     loading.value = true;
                     frappe.call({
                         method: 'document_management.frappe_document_management.page.document_management_console.document_management_console.get_documents',
@@ -796,10 +942,23 @@ class DocumentManagementConsole {
                             categories: filters.categories.length ? JSON.stringify(filters.categories) : null,
                             statuses: filters.statuses.length ? JSON.stringify(filters.statuses) : null,
                             tags: filters.tags.length ? JSON.stringify(filters.tags) : null,
-                            trash: trash_mode.value ? 1 : 0
+                            trash: trash_mode.value ? 1 : 0,
+                            limit: page_size,
+                            start: (current_page.value - 1) * page_size,
+                            include_meta: 1,
+                            sort_by: sort_by.value
                         },
                         callback: (r) => {
-                            documents.value = r.message || [];
+                            const payload = r.message;
+                            if (Array.isArray(payload)) {
+                                documents.value = payload;
+                                total_documents.value = payload.length;
+                                has_more.value = false;
+                            } else {
+                                documents.value = (payload && payload.documents) || [];
+                                total_documents.value = Number((payload && payload.total) ?? documents.value.length);
+                                has_more.value = Boolean(payload && payload.has_more);
+                            }
                             selected_names.value = new Set();
                             if (requested_document) {
                                 const requested = documents.value.find(
@@ -904,7 +1063,7 @@ class DocumentManagementConsole {
                         view_mode.value = values.view_mode;
                     }
                     selected_doc.value = null;
-                    fetch_documents();
+                    fetch_documents(true);
                 };
 
                 const save_view = () => {
@@ -978,7 +1137,36 @@ class DocumentManagementConsole {
 
                 const debounce_fetch = () => {
                     clearTimeout(debounceTimer);
-                    debounceTimer = setTimeout(fetch_documents, 300);
+                    debounceTimer = setTimeout(() => fetch_documents(true), 300);
+                };
+
+                const go_to_page = (target_page) => {
+                    const next_page = Math.max(1, Number(target_page) || 1);
+                    if (next_page === current_page.value) return;
+                    current_page.value = next_page;
+                    fetch_documents(false);
+                };
+
+                const show_search_help = () => {
+                    if (adapter?.show_search_help) return adapter.show_search_help();
+                    frappe.msgprint({
+                        title: __('Advanced Search Syntax'),
+                        message: `
+                            <p>${__('Combine free text with field filters. Prefix any filter with <code>-</code> to exclude matches.')}</p>
+                            <table class="table table-bordered table-condensed" style="font-size: 12px;">
+                                <tbody>
+                                    <tr><td><code>status:Published</code></td><td>${__('Filter by status (Draft, Published, Obsolete)')}</td></tr>
+                                    <tr><td><code>category:Legal</code></td><td>${__('Filter by category')}</td></tr>
+                                    <tr><td><code>tag:Urgent -tag:Archived</code></td><td>${__('Include or exclude tags')}</td></tr>
+                                    <tr><td><code>title:"loan agreement"</code></td><td>${__('Search within title')}</td></tr>
+                                    <tr><td><code>code:LN-2026</code></td><td>${__('Search by document code')}</td></tr>
+                                    <tr><td><code>ocr:"signed by"</code></td><td>${__('Search within OCR content')}</td></tr>
+                                    <tr><td><code>owner:user@example.com</code></td><td>${__('Filter by document owner')}</td></tr>
+                                    <tr><td><code>created:2026-01-01..2026-01-31</code></td><td>${__('Filter by creation or modified date range')}</td></tr>
+                                </tbody>
+                            </table>
+                        `
+                    });
                 };
 
                 const text_preview_content = ref('');
@@ -1005,17 +1193,210 @@ class DocumentManagementConsole {
                     }
                 }
 
+                function fetch_versions(doc_name) {
+                    if (!doc_name) {
+                        selected_versions.value = [];
+                        return;
+                    }
+                    frappe.call({
+                        method: 'document_management.frappe_document_management.page.document_management_console.document_management_console.get_document_versions',
+                        args: {doc_name},
+                        callback: (r) => {
+                            if (selected_doc.value && selected_doc.value.name === doc_name) {
+                                selected_versions.value = r.message || [];
+                            }
+                        }
+                    });
+                }
+
                 function select_doc(doc) {
                     if (provider) return adapter.select_document(doc);
                     selected_doc.value = doc;
+                    selected_versions.value = [];
                     const file_path = doc ? (doc.original_file || doc.document_file) : null;
                     const preview_url = doc ? (doc.original_download || doc.document_download || file_path) : null;
+                    if (doc && doc.name) {
+                        fetch_versions(doc.name);
+                    }
                     if (file_path && (is_txt(file_path) || is_md(file_path, doc))) {
                         load_text_preview(preview_url);
                     } else {
                         text_preview_content.value = '';
                     }
                 }
+
+                const preview_version = (ver) => {
+                    if (!ver || !selected_doc.value) return;
+                    const doc = selected_doc.value;
+                    const url = ver.preview_url || (ver.download_url ? ver.download_url.replace(/([?&])attachment=1(&?)/, '$1attachment=0$2') : '');
+                    if (!url) return;
+                    const isPdfPreview = Boolean(ver.has_preview || (doc.original_file && is_pdf(doc.original_file)));
+                    let mountedApp = null;
+                    const dialog = new frappe.ui.Dialog({
+                        title: `${escape_html(doc.document_name || doc.name)} · v${escape_html(ver.version_number)}`,
+                        size: 'extra-large',
+                        fields: [{fieldname: 'viewer_html', fieldtype: 'HTML'}],
+                        on_hide: () => {
+                            if (mountedApp) {
+                                try { mountedApp.unmount(); } catch (e) {}
+                                mountedApp = null;
+                            }
+                        }
+                    });
+                    dialog.show();
+                    const container = dialog.fields_dict.viewer_html.$wrapper[0];
+                    if (isPdfPreview && window.LoanManagerPdfSearchViewer) {
+                        container.innerHTML = '<div style="height: 72vh; position: relative;"></div>';
+                        const mountTarget = container.firstElementChild;
+                        mountedApp = createApp({
+                            template: '<loan-pdf-viewer :src="src" :max-scale="3"></loan-pdf-viewer>',
+                            setup() { return {src: ref(url)}; }
+                        });
+                        mountedApp.component('loan-pdf-viewer', window.LoanManagerPdfSearchViewer.createVueComponent(Vue));
+                        mountedApp.mount(mountTarget);
+                    } else {
+                        container.innerHTML = `<iframe src="${escape_html(url)}" style="width:100%;height:72vh;border:0;border-radius:6px;"></iframe>`;
+                    }
+                };
+
+                const quick_edit_doc = (doc) => {
+                    if (!doc) return;
+                    const currentTagSet = new Set((doc.tags || []).map((t) => t.name));
+                    const fields = [
+                        {fieldname: 'title', fieldtype: 'Data', label: __('Title'), default: doc.document_name, reqd: 1},
+                        {fieldname: 'document_code', fieldtype: 'Data', label: __('Document Code'), default: doc.document_code || ''},
+                        {fieldname: 'category', fieldtype: 'Link', options: 'Document Category', label: __('Category'), default: doc.category || ''},
+                        {fieldname: 'status', fieldtype: 'Select', label: __('Status'), options: 'Draft\nPublished\nObsolete', default: doc.status || 'Draft'},
+                    ];
+                    if (department_available.value) {
+                        fields.push({fieldname: 'department', fieldtype: 'Link', options: 'Department', label: __('Department'), default: doc.department || ''});
+                    }
+                    fields.push(
+                        {fieldname: 'expiry_date', fieldtype: 'Date', label: __('Expiry Date'), default: doc.expiry_date || ''},
+                        {fieldname: 'review_date', fieldtype: 'Date', label: __('Review Date'), default: doc.review_date || ''},
+                        {fieldname: 'description', fieldtype: 'Small Text', label: __('Description'), default: doc.description || ''},
+                        {fieldname: 'only_me', fieldtype: 'Check', label: __('Only Me'), default: doc.only_me ? 1 : 0}
+                    );
+                    const hasTagOptions = Array.isArray(tags.value) && tags.value.length > 0;
+                    if (hasTagOptions) {
+                        fields.push({
+                            fieldname: 'tags',
+                            fieldtype: 'MultiCheck',
+                            label: __('Tags'),
+                            columns: 3,
+                            options: tags.value.map((t) => ({
+                                label: t.name,
+                                value: t.name,
+                                checked: currentTagSet.has(t.name),
+                            })),
+                        });
+                    } else {
+                        fields.push({fieldname: 'tags', fieldtype: 'Data', label: __('Tags (comma separated)'), default: Array.from(currentTagSet).join(', ')});
+                    }
+                    const dialog = new frappe.ui.Dialog({
+                        title: __('Quick Edit'),
+                        fields,
+                        primary_action_label: __('Save'),
+                        primary_action: (values) => {
+                            const selectedTags = Array.isArray(values.tags) ? values.tags : csv(values.tags);
+                            const args = {
+                                doc_name: doc.name,
+                                title: values.title,
+                                document_code: values.document_code || '',
+                                category: values.category || '',
+                                status: values.status,
+                                description: values.description || '',
+                                only_me: values.only_me ? 1 : 0,
+                                expiry_date: values.expiry_date || '',
+                                review_date: values.review_date || '',
+                                tags: JSON.stringify(selectedTags)
+                            };
+                            if (department_available.value) {
+                                args.department = values.department || '';
+                            }
+                            frappe.call({
+                                method: 'document_management.frappe_document_management.page.document_management_console.document_management_console.update_document_metadata',
+                                args,
+                                freeze: true,
+                                callback: (r) => {
+                                    if (!r.exc) {
+                                        dialog.hide();
+                                        frappe.show_alert({message: __('Document updated'), indicator: 'green'});
+                                        fetch_documents(false);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    dialog.show();
+                };
+
+                const upload_new_version = (doc) => {
+                    if (!doc) return;
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.onchange = () => {
+                        const file = input.files?.[0];
+                        if (!file) return;
+                        frappe.prompt(
+                            [{fieldname: 'change_log', fieldtype: 'Small Text', label: __('Change Log / Notes'), default: 'Uploaded new version'}],
+                            async (values) => {
+                                try {
+                                    await upload_document_file(
+                                        file,
+                                        'document_management.frappe_document_management.page.document_management_console.document_management_console.add_document_version',
+                                        {
+                                            doc_name: doc.name,
+                                            folder: doc.folder || '',
+                                            change_log: values.change_log || ''
+                                        }
+                                    );
+                                    frappe.show_alert({message: __('New version uploaded'), indicator: 'green'});
+                                    fetch_documents(false);
+                                    fetch_versions(doc.name);
+                                } catch (err) {
+                                    frappe.msgprint(err?.message || __('File upload failed.'));
+                                }
+                            },
+                            __('Upload New Version')
+                        );
+                    };
+                    input.click();
+                };
+
+                const view_ocr_text = (doc) => {
+                    if (!doc) return;
+                    frappe.call({
+                        method: 'document_management.frappe_document_management.page.document_management_console.document_management_console.get_document_ocr_text',
+                        args: {doc_name: doc.name},
+                        freeze: true,
+                        callback: (r) => {
+                            const data = r.message || {};
+                            const text = data.ocr_content || '';
+                            const dialog = new frappe.ui.Dialog({
+                                title: `${__('View OCR Text')} · ${doc.document_name || doc.name}`,
+                                size: 'large',
+                                fields: [
+                                    {
+                                        fieldname: 'ocr_html',
+                                        fieldtype: 'HTML',
+                                        options: text
+                                            ? `<pre style="max-height: 60vh; overflow: auto; white-space: pre-wrap; padding: 12px; background: var(--subtle-fg); border-radius: 6px;">${escape_html(text)}</pre>`
+                                            : `<p class="text-muted">${__('No OCR text extracted yet.')}</p>`
+                                    }
+                                ],
+                                primary_action_label: __('Copy'),
+                                primary_action: () => {
+                                    if (!text) return;
+                                    navigator.clipboard?.writeText(text).then(() => {
+                                        frappe.show_alert({message: __('Copied to clipboard'), indicator: 'green'});
+                                    });
+                                }
+                            });
+                            dialog.show();
+                        }
+                    });
+                };
 
                 function sync_selected_doc() {
                     if (!selected_doc.value) return;
@@ -1077,7 +1458,7 @@ class DocumentManagementConsole {
                     trash_mode.value = !trash_mode.value;
                     selected_doc.value = null;
                     clear_selection();
-                    fetch_documents();
+                    fetch_documents(true);
                 };
 
                 const show_bulk_edit = () => {
@@ -1110,8 +1491,9 @@ class DocumentManagementConsole {
                         args: {documents: JSON.stringify(selected_list())},
                         freeze: true,
                         callback: (r) => {
-                            if (r.message?.file_url) {
-                                window.open(r.message.file_url, '_blank');
+                            const url = r.message?.download_url || r.message?.file_url;
+                            if (url) {
+                                window.open(url, '_blank', 'noopener');
                             }
                         }
                     });
@@ -1189,57 +1571,38 @@ class DocumentManagementConsole {
                     return '';
                 };
 
-                const is_pdf = (file) => file && file.toLowerCase().endsWith('.pdf');
-                const is_img = (file) => file && file.match(/\.(jpeg|jpg|gif|png|webp|svg)$/i) != null;
-                const is_office = (file) => file && file.match(/\.(doc|docx|ppt|pptx|xls|xlsx)$/i) != null;
-                const is_txt = (file) => file && file.toLowerCase().endsWith('.txt');
-                const is_md = (file, doc = null) => {
-                    if (file && file.toLowerCase().endsWith('.md')) return true;
-                    if (doc && doc.is_markdown) return true;
-                    return false;
-                };
+                const dm_helpers = (frappe.document_management && frappe.document_management.helpers) || window.DocumentManagementHelpers || {};
+                const is_pdf = (file) => dm_helpers.is_pdf ? dm_helpers.is_pdf(file) : Boolean(file && file.toLowerCase().endsWith('.pdf'));
+                const is_img = (file) => dm_helpers.is_img ? dm_helpers.is_img(file) : Boolean(file && file.match(/\.(jpeg|jpg|gif|png|webp)$/i) != null);
+                const is_office = (file) => dm_helpers.is_office ? dm_helpers.is_office(file) : Boolean(file && file.match(/\.(doc|docx|ppt|pptx|xls|xlsx)$/i) != null);
+                const is_txt = (file) => dm_helpers.is_txt ? dm_helpers.is_txt(file) : Boolean(file && file.toLowerCase().endsWith('.txt'));
+                const is_md = (file, doc = null) => dm_helpers.is_md ? dm_helpers.is_md(file, doc) : Boolean((file && file.toLowerCase().endsWith('.md')) || (doc && doc.is_markdown));
 
-                const escape_html = (value) => String(value || '')
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
-
-                const highlight_text = (value, terms) => {
-                    const text = String(value || '');
-                    terms = Array.from(new Set(terms || []))
-                        .sort((left, right) => right.length - left.length);
-                    if (!terms.length) return escape_html(text);
-                    const escaped_terms = terms.map(
-                        (term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                    );
-                    const pattern = new RegExp(`(${escaped_terms.join('|')})`, 'giu');
-                    let html = '';
-                    let last_index = 0;
-                    for (const match of text.matchAll(pattern)) {
-                        html += escape_html(text.slice(last_index, match.index));
-                        html += `<mark>${escape_html(match[0])}</mark>`;
-                        last_index = match.index + match[0].length;
-                    }
-                    return html + escape_html(text.slice(last_index));
-                };
+                const escape_html = (value) => dm_helpers.escape_html
+                    ? dm_helpers.escape_html(value)
+                    : frappe.utils.escape_html(String(value || ''));
+                const highlight_text = (value, terms) => dm_helpers.highlight_text
+                    ? dm_helpers.highlight_text(value, terms)
+                    : escape_html(value);
+                const sanitize_html = (html) => dm_helpers.sanitize_html
+                    ? dm_helpers.sanitize_html(html)
+                    : (window.DOMPurify ? window.DOMPurify.sanitize(html || '') : escape_html(html));
 
                 const render_markdown = (text) => {
                     if (!text) return '';
                     try {
                         if (window.marked && typeof window.marked.parse === 'function') {
-                            const parsed = window.marked.parse(text);
-                            const document = new DOMParser().parseFromString(parsed, 'text/html');
+                            const parsed = sanitize_html(window.marked.parse(text));
+                            const parsed_doc = new DOMParser().parseFromString(parsed, 'text/html');
                             const slug_counts = new Map();
-                            document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+                            parsed_doc.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
                                 const base_slug = markdown_anchor_slug(heading.textContent);
                                 if (!base_slug) return;
                                 const count = slug_counts.get(base_slug) || 0;
                                 heading.id = count ? `${base_slug}-${count}` : base_slug;
                                 slug_counts.set(base_slug, count + 1);
                             });
-                            return document.body.innerHTML;
+                            return parsed_doc.body.innerHTML;
                         }
                     } catch (e) {
                         console.error('Error parsing markdown', e);
@@ -1267,69 +1630,21 @@ class DocumentManagementConsole {
                     target.scrollIntoView({behavior: 'smooth', block: 'start'});
                 };
 
-                const get_file_type = (doc) => {
-                    const file_path = doc.original_file || doc.document_file;
-                    if (!file_path) return 'generic';
-                    if (is_pdf(file_path)) return 'pdf';
-                    if (is_img(file_path)) return 'image';
-                    if (is_txt(file_path)) {
-                        return doc.is_markdown ? 'markdown' : 'text';
-                    }
-                    if (is_md(file_path, doc)) return 'markdown';
-                    if (file_path.match(/\.(doc|docx)$/i)) return 'word';
-                    if (file_path.match(/\.(xls|xlsx)$/i)) return 'excel';
-                    if (file_path.match(/\.(ppt|pptx)$/i)) return 'ppt';
-                    return 'generic';
-                };
-
-                const get_icon_class = (doc) => {
-                    return get_file_type(doc);
-                };
-
-                const get_icon = (doc) => {
-                    const file_path = doc.original_file || doc.document_file;
-                    if (is_pdf(file_path)) return 'fa-file-pdf-o';
-                    if (is_img(file_path)) return 'fa-file-image-o';
-                    if (is_txt(file_path)) return 'fa-file-text-o';
-                    if (is_md(file_path, doc)) return 'fa-file-text-o';
-                    if (file_path && file_path.match(/\.(doc|docx)$/i)) return 'fa-file-word-o';
-                    if (file_path && file_path.match(/\.(xls|xlsx)$/i)) return 'fa-file-excel-o';
-                    if (file_path && file_path.match(/\.(ppt|pptx)$/i)) return 'fa-file-powerpoint-o';
-                    if (file_path) return 'fa-file-o';
-                    return 'fa-ban';
-                };
-
-                const get_contrast_color = (hex) => {
-                    if (!hex) return '#000000';
-                    if (hex.indexOf('#') === 0) hex = hex.slice(1);
-                    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
-                    if (hex.length !== 6) return '#000000';
-                    
-                    const r = parseInt(hex.slice(0, 2), 16);
-                    const g = parseInt(hex.slice(2, 4), 16);
-                    const b = parseInt(hex.slice(4, 6), 16);
-                    
-                    const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000;
-                    return (yiq >= 128) ? '#000000' : '#ffffff';
-                };
-
-                const get_tag_style = (color) => {
-                    const tag_color = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color || '')
-                        ? color
-                        : '#e2e8f0';
-                    return {
-                        '--tag-color': tag_color,
-                        '--tag-contrast': get_contrast_color(tag_color)
-                    };
-                };
+                const get_file_type = (doc) => dm_helpers.get_file_type ? dm_helpers.get_file_type(doc) : 'generic';
+                const get_icon_class = (doc) => get_file_type(doc);
+                const get_icon = (doc) => dm_helpers.get_icon ? dm_helpers.get_icon(doc) : 'FILE';
+                const get_tag_style = (color) => dm_helpers.get_tag_style
+                    ? dm_helpers.get_tag_style(color)
+                    : {'--tag-color': '#e2e8f0', '--tag-contrast': '#000000'};
 
                 const is_fullscreen = ref(false);
 
                 const copy_link = (doc) => {
                     if (!doc) return;
-                    const pageSuffix = doc.search_page ? `&page=${doc.search_page}` : '';
-                    const link = `${window.location.origin}/app/document-management-console?Doc=${encodeURIComponent(doc.name)}${pageSuffix}`;
-                    
+                    const params = { Doc: doc.name };
+                    if (doc.search_page) params.page = doc.search_page;
+                    const link = window.location.origin + frappe.document_management.helpers.desk_page_url('document-management-console', params);
+
                     navigator.clipboard.writeText(link).then(() => {
                         frappe.show_alert({message: __('Link copied to clipboard!'), indicator: 'green'});
                     }).catch(err => {
@@ -1365,6 +1680,17 @@ class DocumentManagementConsole {
                                 label: __('Hide download button')
                             },
                             {
+                                fieldname: 'max_views',
+                                fieldtype: 'Int',
+                                label: __('Maximum views (0 = unlimited)'),
+                                default: 0
+                            },
+                            {
+                                fieldname: 'passcode',
+                                fieldtype: 'Password',
+                                label: __('Passcode (optional, min 4 chars)')
+                            },
+                            {
                                 fieldname: 'links_html',
                                 fieldtype: 'HTML',
                                 label: __('Existing links')
@@ -1379,7 +1705,9 @@ class DocumentManagementConsole {
                                     ...(share_methods ? { revision: doc.revision } : {}),
                                     expiration_days: values.expiration_days,
                                     file_version: values.file_version,
-                                    hide_download_button: values.hide_download_button ? 1 : 0
+                                    hide_download_button: values.hide_download_button ? 1 : 0,
+                                    max_views: values.max_views || 0,
+                                    passcode: values.passcode || null
                                 },
                                 callback: (r) => {
                                     if (!r.exc && r.message?.url) {
@@ -1405,12 +1733,18 @@ class DocumentManagementConsole {
                                     wrapper.html(`<p class="text-muted">${__('No share links created.')}</p>`);
                                     return;
                                 }
-                                wrapper.html(links.map((link) => `
+                                wrapper.html(links.map((link) => {
+                                    const views = Number(link.access_count || 0);
+                                    const maxV = Number(link.max_views || 0);
+                                    const viewsLabel = maxV > 0 ? `${views}/${maxV}` : `${views}`;
+                                    const lockBadge = link.has_passcode ? ' · <i class="fa fa-lock"></i>' : '';
+                                    return `
                                     <div class="share-link-row" style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--border-color);">
-                                        <span>${frappe.utils.escape_html(link.file_version)} · ${frappe.datetime.str_to_user(link.expires_at)} · ${link.enabled ? __('Active') : __('Revoked')}</span>
+                                        <span>${frappe.utils.escape_html(link.file_version)} · ${frappe.datetime.str_to_user(link.expires_at)} · ${viewsLabel} ${__('views')}${lockBadge} · ${link.enabled ? __('Active') : __('Revoked')}</span>
                                         ${link.enabled ? `<button class="btn btn-xs btn-danger revoke-share-link" data-name="${frappe.utils.escape_html(link.name)}">${__('Revoke')}</button>` : ''}
                                     </div>
-                                `).join(''));
+                                `;
+                                }).join(''));
                                 wrapper.find('.revoke-share-link').on('click', function() {
                                     frappe.call({
                                         method: share_methods?.revoke || 'document_management.frappe_document_management.utils.document_sharing.revoke_share_link',
@@ -1504,30 +1838,63 @@ class DocumentManagementConsole {
                     });
                 };
 
+                let page_visible = true;
+                let needs_refresh = false;
+
+                const is_console_active = () => {
+                    if (document.hidden || !page_visible) return false;
+                    const route = frappe.get_route ? frappe.get_route() : [];
+                    return !route.length || route[0] === 'document-management-console';
+                };
+
                 const handle_realtime_document_change = (event) => {
                     if (!event || event.doctype !== 'Document') return;
+                    if (!is_console_active()) {
+                        needs_refresh = true;
+                        return;
+                    }
                     clearTimeout(realtimeRefreshTimer);
                     realtimeRefreshTimer = setTimeout(() => {
                         fetch_categories();
                         fetch_tags();
-                        fetch_documents();
+                        fetch_documents(false);
                     }, 250);
                 };
 
-                // A page_js provider owns data loading and receives reactive console state.
-                // Its optional Vue components fill the extension points in the template.
+                const handle_keydown = (event) => {
+                    if (event.key === 'Escape' && is_fullscreen.value) {
+                        is_fullscreen.value = false;
+                    }
+                };
+
                 const adapter = provider?.setup({
                     Vue, documents, categories, tags, selected_doc, loading, filters, view_mode, is_fullscreen,
-                    manage_share_links
+                    manage_share_links, sort_by, current_page, total_documents, has_more, page_size
                 });
                 const extensions = adapter?.components || {};
                 const hide_empty_state = adapter?.hide_empty_state || false;
                 const sidebar_class = adapter?.sidebar_class || '';
+                const sort_disabled = adapter?.sort_disabled || computed(() => Boolean(filters.search && !trash_mode.value));
+
+                const console_instance = console_controller;
+                console_instance.on_page_show = () => {
+                    page_visible = true;
+                    if (adapter) return adapter.on_show();
+                    if (needs_refresh) {
+                        needs_refresh = false;
+                        fetch_categories();
+                        fetch_tags();
+                        fetch_documents(false);
+                    }
+                };
+                console_instance.on_page_hide = () => {
+                    page_visible = false;
+                };
 
                 onMounted(() => {
                     window.addEventListener('click', handle_window_click);
+                    window.addEventListener('keydown', handle_keydown);
                     if (adapter) {
-                        console_page.on_show = adapter.on_show;
                         adapter.on_show();
                         return;
                     }
@@ -1549,11 +1916,14 @@ class DocumentManagementConsole {
                         frappe.realtime.off(realtime_event);
                     }
                     window.removeEventListener('click', handle_window_click);
+                    window.removeEventListener('keydown', handle_keydown);
                 });
 
                 return {
-                    provider, extensions, hide_empty_state, sidebar_class,
-                    documents, categories, folders, tags, selected_doc, view_mode, loading, filters, is_fullscreen,
+                    provider, extensions, hide_empty_state, sidebar_class, sort_disabled,
+                    documents, current_page, total_documents, total_pages, has_more, sort_by, go_to_page, show_search_help,
+                    categories, folders, tags, selected_doc, selected_versions, preview_version, quick_edit_doc, upload_new_version, view_ocr_text,
+                    view_mode, loading, filters, is_fullscreen,
                     department_available,
                     trash_mode, selected_count, all_selected, can_purge,
                     saved_views, selected_saved_view,

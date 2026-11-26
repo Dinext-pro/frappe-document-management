@@ -9,7 +9,11 @@
   "expires_at",
   "file_version",
   "hide_download_button",
-  "enabled"
+  "enabled",
+  "max_views",
+  "access_count",
+  "last_accessed_at",
+  "passcode_hash"
  ],
  "fields": [
   {
@@ -53,6 +57,33 @@
    "fieldname": "enabled",
    "fieldtype": "Check",
    "label": "Enabled"
+  },
+  {
+   "default": "0",
+   "fieldname": "max_views",
+   "fieldtype": "Int",
+   "label": "Maximum Views",
+   "description": "0 means unlimited views."
+  },
+  {
+   "default": "0",
+   "fieldname": "access_count",
+   "fieldtype": "Int",
+   "label": "Access Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_accessed_at",
+   "fieldtype": "Datetime",
+   "label": "Last Accessed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "passcode_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Passcode Hash",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,

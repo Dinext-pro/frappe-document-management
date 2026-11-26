@@ -297,7 +297,7 @@ class IndexedDocTypesSearchController {
             } else if (event.key === 'Enter' && this.activeIndex >= 0 && cards[this.activeIndex]) {
                 event.preventDefault();
                 const $card = $(cards[this.activeIndex]);
-                const href = $card.attr('href');
+                const href = $card.data('route');
                 const rowData = $card.data('searchRow');
                 if (event.ctrlKey || event.metaKey) {
                     if (href) window.open(href, '_blank', 'noopener');
@@ -674,15 +674,27 @@ class IndexedDocTypesSearchController {
         section.append($('<h5 class="result-section-title"></h5>').text(title));
         const list = $('<div class="result-list"></div>');
         rows.forEach((row) => {
-            const card = $('<a class="search-result"></a>')
-                .attr('href', row.route)
+            const card = $('<div class="search-result" role="button" tabindex="0"></div>')
+                .data('route', row.route)
                 .data('searchRow', row)
                 .on('click', (event) => {
-                    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.ctrlKey || event.metaKey) {
+                        if (row.route) window.open(row.route, '_blank', 'noopener');
                         return;
                     }
-                    event.preventDefault();
+                    if (event.shiftKey || event.altKey || event.button !== 0) {
+                        return;
+                    }
                     this.openResultModal(row);
+                })
+                .on('auxclick', (event) => {
+                    if (event.button === 1 && row.route) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        window.open(row.route, '_blank', 'noopener');
+                    }
                 });
             const header = $('<div class="result-header"></div>');
             header.append(
@@ -724,7 +736,7 @@ class IndexedDocTypesSearchController {
         const route = row.route || '';
         const dialog = new frappe.ui.Dialog({
             title: `${row.doc_type}: ${row.title || row.doc_name}`,
-            size: 'large',
+            size: 'extra-large',
             primary_action_label: __('Open Record'),
             primary_action: () => {
                 dialog.hide();
@@ -735,6 +747,7 @@ class IndexedDocTypesSearchController {
                 if (route) window.open(route, '_blank', 'noopener');
             }
         });
+        dialog.$wrapper.addClass('dm-search-preview-dialog');
         dialog.$body.html(
             '<div class="search-modal-loading"><i class="fa fa-spinner fa-spin"></i> ' +
             `${__('Loading record preview...')}</div>`

@@ -1957,3 +1957,7 @@ class TestIndexedDocTypesSearchPhaseDF(TestCase):
         self.assertIn("openResultModal", js)
         self.assertIn("focus_child_row_on_form", js)
         self.assertIn("Open Row in Record", js)
+        self.assertNotIn('<a class="search-result"', js)
+        self.assertIn("event.stopPropagation()", js)
+        self.assertIn("dm-search-preview-dialog", js)
+        self.assertIn("size: 'extra-large'", js)

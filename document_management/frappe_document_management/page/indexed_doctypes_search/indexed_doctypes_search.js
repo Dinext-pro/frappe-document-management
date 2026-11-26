@@ -271,6 +271,8 @@ class IndexedDocTypesSearchController {
             if (!input.is(':visible')) return;
             const tag = (document.activeElement?.tagName || '').toLowerCase();
             const isTyping = ['input', 'textarea', 'select'].includes(tag) || document.activeElement?.isContentEditable;
+            const hasOpenModal = $('.modal.show, .modal.in').length > 0;
+            if (hasOpenModal) return;
 
             if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey && !isTyping) {
                 event.preventDefault();
@@ -294,13 +296,15 @@ class IndexedDocTypesSearchController {
                 }
             } else if (event.key === 'Enter' && this.activeIndex >= 0 && cards[this.activeIndex]) {
                 event.preventDefault();
-                const href = $(cards[this.activeIndex]).attr('href');
-                if (href) {
-                    if (event.ctrlKey || event.metaKey) {
-                        window.open(href, '_blank', 'noopener');
-                    } else {
-                        window.location.href = href;
-                    }
+                const $card = $(cards[this.activeIndex]);
+                const href = $card.attr('href');
+                const rowData = $card.data('searchRow');
+                if (event.ctrlKey || event.metaKey) {
+                    if (href) window.open(href, '_blank', 'noopener');
+                } else if (rowData) {
+                    this.openResultModal(rowData);
+                } else if (href) {
+                    window.location.href = href;
                 }
             } else if (event.key === 'Escape') {
                 event.preventDefault();
@@ -329,7 +333,7 @@ class IndexedDocTypesSearchController {
                     <strong>${__('Keyboard shortcuts')}:</strong>
                     <code>/</code> ${__('focus search')} &middot;
                     <code>&uarr;/&darr;</code> ${__('navigate results')} &middot;
-                    <code>Enter</code> ${__('open record')} &middot;
+                    <code>Enter</code> ${__('preview record')} &middot;
                     <code>Ctrl+Enter</code> ${__('open in new tab')} &middot;
                     <code>Esc</code> ${__('clear search')}
                 </p>
@@ -671,7 +675,15 @@ class IndexedDocTypesSearchController {
         const list = $('<div class="result-list"></div>');
         rows.forEach((row) => {
             const card = $('<a class="search-result"></a>')
-                .attr('href', row.route);
+                .attr('href', row.route)
+                .data('searchRow', row)
+                .on('click', (event) => {
+                    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) {
+                        return;
+                    }
+                    event.preventDefault();
+                    this.openResultModal(row);
+                });
             const header = $('<div class="result-header"></div>');
             header.append(
                 $('<div class="result-title"></div>').append(
@@ -705,6 +717,272 @@ class IndexedDocTypesSearchController {
         });
         section.append(list);
         container.append(section);
+    }
+
+    openResultModal(row) {
+        if (!row || !row.doc_type || !row.doc_name) return;
+        const route = row.route || '';
+        const dialog = new frappe.ui.Dialog({
+            title: `${row.doc_type}: ${row.title || row.doc_name}`,
+            size: 'large',
+            primary_action_label: __('Open Record'),
+            primary_action: () => {
+                dialog.hide();
+                this.navigateToRecord(row.doc_type, row.doc_name, route, null);
+            },
+            secondary_action_label: __('Open in New Tab'),
+            secondary_action: () => {
+                if (route) window.open(route, '_blank', 'noopener');
+            }
+        });
+        dialog.$body.html(
+            '<div class="search-modal-loading"><i class="fa fa-spinner fa-spin"></i> ' +
+            `${__('Loading record preview...')}</div>`
+        );
+        dialog.show();
+
+        this.call('get_search_result_preview', {
+            doc_type: row.doc_type,
+            doc_name: row.doc_name,
+            query: this.currentQuery || ''
+        }).then((preview) => {
+            if (!preview) {
+                dialog.$body.html(
+                    `<div class="search-modal-empty">${__('Unable to load record preview.')}</div>`
+                );
+                return;
+            }
+            this.renderPreviewModal(dialog, preview);
+        }).catch(() => {
+            dialog.$body.html(
+                `<div class="search-modal-empty">${__('Unable to load record preview.')}</div>`
+            );
+        });
+    }
+
+    buildRecordUrl(route, childRow) {
+        if (!route) return '';
+        if (!childRow || !childRow.table_fieldname) return route;
+        const params = new URLSearchParams();
+        params.set('dm_child_field', childRow.table_fieldname);
+        if (childRow.row_name) params.set('dm_child_row', childRow.row_name);
+        if (childRow.idx) params.set('dm_child_idx', String(childRow.idx));
+        const sep = route.includes('?') ? '&' : '?';
+        return `${route}${sep}${params.toString()}`;
+    }
+
+    navigateToRecord(docType, docName, route, childRow) {
+        const helpers = frappe.document_management && frappe.document_management.helpers;
+        if (typeof frappe.set_route === 'function' && docType && docName) {
+            const nav = frappe.set_route('Form', docType, docName);
+            if (childRow && childRow.table_fieldname && helpers && typeof helpers.focus_child_row_on_form === 'function') {
+                const triggerFocus = () => helpers.focus_child_row_on_form(
+                    docType,
+                    docName,
+                    childRow.table_fieldname,
+                    childRow.row_name || '',
+                    childRow.idx || 0
+                );
+                if (nav && typeof nav.then === 'function') {
+                    nav.then(triggerFocus);
+                } else {
+                    triggerFocus();
+                }
+            }
+            return;
+        }
+        const targetUrl = this.buildRecordUrl(route, childRow);
+        if (targetUrl) {
+            window.location.href = targetUrl;
+        }
+    }
+
+    renderPreviewModal(dialog, preview) {
+        const matchedRows = preview.matched_child_rows || [];
+        const hasChildRows = matchedRows.length > 0;
+        const hasParentFields = (preview.fields || []).length > 0;
+        const isChildPrimary = preview.match_source === 'child_table' && hasChildRows;
+        let activeView = isChildPrimary ? 'child' : 'doctype';
+        let activeChildIndex = 0;
+
+        const activeChildRow = () => (
+            activeView === 'child' && matchedRows[activeChildIndex]
+                ? matchedRows[activeChildIndex]
+                : null
+        );
+
+        const updateActions = () => {
+            const childRow = activeChildRow();
+            const label = childRow
+                ? __('Open Row in Record')
+                : __('Open Record');
+            dialog.set_primary_action(label, () => {
+                dialog.hide();
+                this.navigateToRecord(
+                    preview.doc_type,
+                    preview.doc_name,
+                    preview.route,
+                    childRow
+                );
+            });
+            if (preview.route) {
+                dialog.set_secondary_action(() => {
+                    const url = this.buildRecordUrl(preview.route, childRow);
+                    if (url) window.open(url, '_blank', 'noopener');
+                });
+            }
+        };
+
+        const updateTitle = () => {
+            const childRow = activeChildRow();
+            if (childRow) {
+                const rowTitle = `${childRow.table_label} #${childRow.idx || 1} — ${preview.title || preview.doc_name}`;
+                dialog.set_title(rowTitle);
+            } else {
+                dialog.set_title(`${preview.doc_type}: ${preview.title || preview.doc_name}`);
+            }
+        };
+
+        const renderBody = () => {
+            updateTitle();
+            updateActions();
+            const $wrap = $('<div class="search-preview-modal"></div>');
+
+            // Header metadata bar
+            const $meta = $('<div class="search-preview-meta"></div>');
+            $meta.append($('<span class="search-preview-pill"></span>').text(preview.doc_type));
+            $meta.append($('<span class="search-preview-id"></span>').append(this.highlightText(preview.doc_name)));
+            if (preview.status) {
+                $meta.append($('<span class="search-preview-status"></span>').text(preview.status));
+            }
+            const modStr = this.formatModified(preview.modified);
+            if (modStr) {
+                $meta.append(
+                    $('<span class="search-preview-date"></span>').text(`${__('Modified')}: ${modStr}`)
+                );
+            }
+            $wrap.append($meta);
+
+            // View switcher tabs when both child rows and parent fields exist
+            if (hasChildRows && hasParentFields) {
+                const $tabs = $('<div class="search-preview-tabs"></div>');
+                const childTabLabel = matchedRows.length === 1
+                    ? __('Matched Child Row')
+                    : __('Matched Child Rows ({0})', [matchedRows.length]);
+                const $childTab = $('<button type="button" class="search-preview-tab"></button>')
+                    .text(childTabLabel)
+                    .toggleClass('active', activeView === 'child')
+                    .on('click', () => {
+                        activeView = 'child';
+                        renderBody();
+                    });
+                const $docTab = $('<button type="button" class="search-preview-tab"></button>')
+                    .text(__('Full Record'))
+                    .toggleClass('active', activeView === 'doctype')
+                    .on('click', () => {
+                        activeView = 'doctype';
+                        renderBody();
+                    });
+                if (isChildPrimary) {
+                    $tabs.append($childTab, $docTab);
+                } else {
+                    $tabs.append($docTab, $childTab);
+                }
+                $wrap.append($tabs);
+            }
+
+            if (activeView === 'child' && hasChildRows) {
+                if (matchedRows.length > 1) {
+                    const $rowNav = $('<div class="search-preview-row-switcher"></div>');
+                    matchedRows.forEach((childRow, idx) => {
+                        const $btn = $('<button type="button" class="search-preview-row-chip"></button>')
+                            .text(`${childRow.table_label} #${childRow.idx || idx + 1}`)
+                            .toggleClass('active', idx === activeChildIndex)
+                            .on('click', () => {
+                                activeChildIndex = idx;
+                                renderBody();
+                            });
+                        $rowNav.append($btn);
+                    });
+                    $wrap.append($rowNav);
+                }
+
+                const currentRow = matchedRows[activeChildIndex] || matchedRows[0];
+                const $banner = $('<div class="search-preview-child-banner"></div>');
+                $banner.append(
+                    $('<strong></strong>').text(
+                        __('Child Table Row: {0} (#{1})', [
+                            currentRow.table_label || currentRow.child_doctype,
+                            currentRow.idx || 1
+                        ])
+                    )
+                );
+                if (currentRow.child_doctype && currentRow.child_doctype !== currentRow.table_label) {
+                    $banner.append(
+                        $('<span class="text-muted"></span>').text(` · ${currentRow.child_doctype}`)
+                    );
+                }
+                $wrap.append($banner);
+                $wrap.append(this.buildPreviewFieldsGrid(currentRow.fields || []));
+            } else {
+                const parentFields = preview.fields || [];
+                const matchedFirst = [
+                    ...parentFields.filter((f) => f.matched),
+                    ...parentFields.filter((f) => !f.matched)
+                ];
+                $wrap.append(this.buildPreviewFieldsGrid(matchedFirst));
+
+                const comments = preview.matched_comments || [];
+                if (comments.length) {
+                    const $cSection = $('<div class="search-preview-comments"></div>');
+                    $cSection.append(
+                        $('<h6 class="search-preview-subtitle"></h6>').text(__('Matching Comments'))
+                    );
+                    comments.forEach((comment) => {
+                        const $item = $('<div class="search-preview-comment"></div>');
+                        const $head = $('<div class="search-preview-comment-head"></div>');
+                        const created = this.formatModified(comment.creation);
+                        $head.text(
+                            [comment.owner, created].filter(Boolean).join(' · ')
+                        );
+                        const $body = $('<div class="search-preview-comment-body"></div>').append(
+                            this.highlightText(comment.content)
+                        );
+                        $item.append($head, $body);
+                        $cSection.append($item);
+                    });
+                    $wrap.append($cSection);
+                }
+            }
+
+            dialog.$body.empty().append($wrap);
+        };
+
+        renderBody();
+    }
+
+    buildPreviewFieldsGrid(fields) {
+        if (!fields || !fields.length) {
+            return $('<div class="search-modal-empty"></div>').text(__('No visible fields to display.'));
+        }
+        const $grid = $('<div class="search-preview-grid"></div>');
+        fields.forEach((field) => {
+            const valStr = String(field.value || '');
+            const isWide = valStr.length > 90 || ['Text', 'Text Editor', 'Long Text', 'Small Text'].includes(field.fieldtype);
+            const $cell = $('<div class="search-preview-field"></div>')
+                .toggleClass('is-matched', Boolean(field.matched))
+                .toggleClass('is-wide', isWide);
+            $cell.append(
+                $('<div class="search-preview-field-label"></div>').text(field.label || field.fieldname)
+            );
+            $cell.append(
+                $('<div class="search-preview-field-value"></div>').append(
+                    this.highlightText(valStr)
+                )
+            );
+            $grid.append($cell);
+        });
+        return $grid;
     }
 
     highlightText(value) {

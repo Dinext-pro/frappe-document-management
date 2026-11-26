@@ -1830,3 +1830,130 @@ class TestIndexedDocTypesSearchPhaseDF(TestCase):
         self.assertIn("elapsed_ms", res)
         self.assertIn("factura clave", res["exact"][0]["excerpt"])
         self.assertNotIn("_raw_content", res["exact"][0])
+
+    def test_get_search_result_preview_doctype_vs_child_table_and_permissions(self):
+        import frappe
+
+        idx_mod = importlib.import_module("document_management.search.indexer")
+
+        class FakeDoc(dict):
+            def __init__(self, doctype, name, fields, **values):
+                super().__init__(values)
+                self.doctype = doctype
+                self.name = name
+                self.modified = values.get("modified", "2026-11-20 10:00:00")
+                self.owner = values.get("owner", "admin@example.com")
+                self.meta = SimpleNamespace(
+                    fields=fields,
+                    title_field=values.get("_title_field"),
+                    istable=values.get("_istable", False),
+                    get_field=lambda fname: next((f for f in fields if f.fieldname == fname), None),
+                )
+                self.checked_perm = []
+
+            def check_permission(self, ptype="read"):
+                self.checked_perm.append(ptype)
+
+        child_fields = [
+            SimpleNamespace(fieldname="item_code", fieldtype="Data", label="Item Code", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="description", fieldtype="Text", label="Description", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="secret_cost", fieldtype="Currency", label="Secret Cost", hidden=0, permlevel=1),
+        ]
+        child_row_1 = FakeDoc(
+            "Sales Invoice Item",
+            "ROW-001",
+            child_fields,
+            item_code="SERV-01",
+            description="Soporte mensual",
+            secret_cost=999,
+        )
+        child_row_1.idx = 1
+        child_row_2 = FakeDoc(
+            "Sales Invoice Item",
+            "ROW-002",
+            child_fields,
+            item_code="DIG-900",
+            description="Digitalización especial de expedientes",
+            secret_cost=500,
+        )
+        child_row_2.idx = 2
+
+        parent_fields = [
+            SimpleNamespace(fieldname="customer_name", fieldtype="Data", label="Customer", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="api_password", fieldtype="Password", label="Password", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="internal_note", fieldtype="Data", label="Internal", hidden=0, permlevel=0),
+            SimpleNamespace(fieldname="items", fieldtype="Table", label="Items", options="Sales Invoice Item", hidden=0, permlevel=0),
+        ]
+        parent_doc = FakeDoc(
+            "Sales Invoice",
+            "SINV-2026-001",
+            parent_fields,
+            customer_name="Acme Corp",
+            api_password="top-secret-password",
+            internal_note="Excluded text",
+            items=[child_row_1, child_row_2],
+            _title_field="customer_name",
+        )
+
+        rules = {
+            "Sales Invoice": {
+                "index_comments": True,
+                "index_attachments": False,
+                "excluded_fields": ["internal_note"],
+            }
+        }
+        with (
+            patch.object(
+                idx_mod,
+                "_get_indexing_config",
+                return_value=(True, False, {"Sales Invoice"}, rules),
+            ),
+            patch.object(frappe, "get_doc", return_value=parent_doc),
+            patch.object(frappe, "get_all", return_value=[]),
+        ):
+            # Query matching child table row -> match_source = "child_table", focuses row #2
+            child_preview = idx_mod.get_search_result_preview(
+                "Sales Invoice",
+                "SINV-2026-001",
+                query="digitalizacion expedientes",
+            )
+            self.assertEqual(child_preview["match_source"], "child_table")
+            self.assertEqual(len(child_preview["matched_child_rows"]), 1)
+            row = child_preview["matched_child_rows"][0]
+            self.assertEqual(row["table_fieldname"], "items")
+            self.assertEqual(row["row_name"], "ROW-002")
+            self.assertEqual(row["idx"], 2)
+            row_field_names = {f["fieldname"] for f in row["fields"]}
+            self.assertIn("description", row_field_names)
+            self.assertNotIn("secret_cost", row_field_names)  # permlevel=1 excluded
+
+            # Query matching parent header -> match_source = "doctype"
+            parent_preview = idx_mod.get_search_result_preview(
+                "Sales Invoice",
+                "SINV-2026-001",
+                query="Acme",
+            )
+            self.assertEqual(parent_preview["match_source"], "doctype")
+            parent_field_names = {f["fieldname"] for f in parent_preview["fields"]}
+            self.assertIn("customer_name", parent_field_names)
+            self.assertNotIn("api_password", parent_field_names)  # Password excluded
+            self.assertNotIn("internal_note", parent_field_names)  # excluded_fields honored
+            self.assertEqual(parent_doc.checked_perm, ["read", "read"])
+
+            # Unconfigured DocType rejected with PermissionError
+            with self.assertRaises(frappe.PermissionError):
+                idx_mod.get_search_result_preview("User", "Administrator", query="admin")
+
+        # Verify modal + child row direct open hooks exist in JS
+        js = (
+            REPO_ROOT
+            / "document_management"
+            / "frappe_document_management"
+            / "page"
+            / "indexed_doctypes_search"
+            / "indexed_doctypes_search.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("get_search_result_preview", js)
+        self.assertIn("openResultModal", js)
+        self.assertIn("focus_child_row_on_form", js)
+        self.assertIn("Open Row in Record", js)

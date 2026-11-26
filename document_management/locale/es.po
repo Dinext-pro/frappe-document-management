@@ -2617,3 +2617,39 @@ msgstr "Busca registros operativos indexados. Admite frases exactas, exclusiones
 
 msgid "Search customers, invoices, loans, or exact phrases..."
 msgstr "Buscar clientes, facturas, préstamos o frases exactas..."
+
+msgid "preview record"
+msgstr "previsualizar registro"
+
+msgid "Open Record"
+msgstr "Abrir registro"
+
+msgid "Open Row in Record"
+msgstr "Abrir línea en el registro"
+
+msgid "Open in New Tab"
+msgstr "Abrir en nueva pestaña"
+
+msgid "Loading record preview..."
+msgstr "Cargando vista previa del registro..."
+
+msgid "Unable to load record preview."
+msgstr "No se pudo cargar la vista previa del registro."
+
+msgid "Matched Child Row"
+msgstr "Línea de tabla hija coincidente"
+
+msgid "Matched Child Rows ({0})"
+msgstr "Líneas de tabla hija coincidentes ({0})"
+
+msgid "Full Record"
+msgstr "Registro completo"
+
+msgid "Child Table Row: {0} (#{1})"
+msgstr "Línea de tabla hija: {0} (#{1})"
+
+msgid "Matching Comments"
+msgstr "Comentarios coincidentes"
+
+msgid "No visible fields to display."
+msgstr "No hay campos visibles para mostrar."

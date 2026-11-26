@@ -2620,3 +2620,39 @@ msgstr "Recherchez des enregistrements opérationnels indexés. Prend en charge 
 
 msgid "Search customers, invoices, loans, or exact phrases..."
 msgstr "Rechercher clients, factures, prêts ou phrases exactes..."
+
+msgid "preview record"
+msgstr "prévisualiser l'enregistrement"
+
+msgid "Open Record"
+msgstr "Ouvrir l'enregistrement"
+
+msgid "Open Row in Record"
+msgstr "Ouvrir la ligne dans l'enregistrement"
+
+msgid "Open in New Tab"
+msgstr "Ouvrir dans un nouvel onglet"
+
+msgid "Loading record preview..."
+msgstr "Chargement de l'aperçu..."
+
+msgid "Unable to load record preview."
+msgstr "Impossible de charger l'aperçu de l'enregistrement."
+
+msgid "Matched Child Row"
+msgstr "Ligne de table enfant correspondante"
+
+msgid "Matched Child Rows ({0})"
+msgstr "Lignes de table enfant correspondantes ({0})"
+
+msgid "Full Record"
+msgstr "Enregistrement complet"
+
+msgid "Child Table Row: {0} (#{1})"
+msgstr "Ligne de table enfant : {0} (#{1})"
+
+msgid "Matching Comments"
+msgstr "Commentaires correspondants"
+
+msgid "No visible fields to display."
+msgstr "Aucun champ visible à afficher."

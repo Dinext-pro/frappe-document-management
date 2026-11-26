@@ -8,6 +8,8 @@ from urllib.parse import quote
 import frappe
 from document_management.search import semantic_backend, tantivy_backend
 from document_management.search.query import (
+    _term_matches_haystack,
+    compile_match_plan,
     current_search_language,
     fold_text,
     make_excerpt,
@@ -34,6 +36,20 @@ SEARCHABLE_FIELD_TYPES = {
     "Percent",
     "Check",
 }
+
+PREVIEWABLE_FIELD_TYPES = SEARCHABLE_FIELD_TYPES | {
+    "Read Only",
+    "Phone",
+    "Email",
+    "URL",
+    "Rating",
+    "Color",
+    "Duration",
+    "Barcode",
+    "Autocomplete",
+}
+MAX_PREVIEW_FIELD_CHARS = 2000
+MAX_PREVIEW_CHILD_ROWS = 25
 
 ALLOWED_SORT_MODES = frozenset({"relevance", "modified_desc", "modified_asc", "title_asc"})
 INDEX_REBUILT_EVENT = "document_management:indexed_search_rebuilt"
@@ -91,6 +107,272 @@ def _is_searchable_field(field):
         field.fieldtype in SEARCHABLE_FIELD_TYPES
         and _is_visible_field(field)
     )
+
+
+def _is_previewable_field(field):
+    return (
+        field.fieldtype in PREVIEWABLE_FIELD_TYPES
+        and _is_visible_field(field)
+    )
+
+
+def _format_preview_value(value, fieldtype, query="", folded_terms=()):
+    if fieldtype == "Check":
+        return "Yes" if int(value or 0) else "No"
+    text = _plain_text(value, fieldtype)
+    if len(text) > MAX_PREVIEW_FIELD_CHARS:
+        if folded_terms:
+            return make_excerpt(
+                text,
+                query,
+                maximum=MAX_PREVIEW_FIELD_CHARS,
+                folded_terms=folded_terms,
+            )
+        return text[:MAX_PREVIEW_FIELD_CHARS].rstrip() + "..."
+    return text
+
+
+def _matched_terms_in_text(text, plan):
+    folded_terms = plan.get("folded_terms") or ()
+    if not folded_terms or not text:
+        return set(), False
+    folded = fold_text(text)
+    matched = {
+        term
+        for term in folded_terms
+        if _term_matches_haystack(term, folded)
+    }
+    folded_query = plan.get("folded_query") or ""
+    phrase_hit = bool(folded_query and len(folded_terms) > 1 and folded_query in folded)
+    return matched, phrase_hit
+
+
+def _collect_doc_preview_fields(doc, excluded, plan, query=""):
+    fields_out = []
+    matched_terms = set()
+    phrase_hit = False
+    for field in getattr(doc.meta, "fields", []) or []:
+        if field.fieldname in excluded:
+            continue
+        if not _is_previewable_field(field):
+            continue
+        val = doc.get(field.fieldname)
+        if val in (None, ""):
+            continue
+        if field.fieldtype == "Check" and not int(val or 0):
+            continue
+        formatted = _format_preview_value(
+            val,
+            field.fieldtype,
+            query=query,
+            folded_terms=plan.get("folded_terms") or (),
+        )
+        if not formatted:
+            continue
+        raw_text = _plain_text(val, field.fieldtype)
+        field_terms, field_phrase = _matched_terms_in_text(raw_text, plan)
+        matched_terms.update(field_terms)
+        phrase_hit = phrase_hit or field_phrase
+        fields_out.append(
+            {
+                "fieldname": field.fieldname,
+                "label": field.label or field.fieldname,
+                "fieldtype": field.fieldtype,
+                "value": formatted,
+                "matched": bool(field_terms or field_phrase),
+            }
+        )
+    return fields_out, matched_terms, phrase_hit
+
+
+def _desk_route(doc_type, doc_name):
+    return (
+        f"/desk/{str(doc_type).lower().replace(' ', '-')}/"
+        f"{quote(str(doc_name), safe='')}"
+    )
+
+
+@frappe.whitelist()
+def get_search_result_preview(doc_type, doc_name, query=""):
+    doc_type = str(doc_type or "").strip()
+    doc_name = str(doc_name or "").strip()
+    query = str(query or "").strip()
+    if not doc_type or not doc_name:
+        frappe.throw("DocType and document name are required.")
+
+    _, _, indexed_doctypes, rules = _get_indexing_config()
+    doc = frappe.get_doc(doc_type, doc_name)
+    is_table_doc = bool(getattr(doc.meta, "istable", False))
+
+    if is_table_doc:
+        parent_dt = getattr(doc, "parenttype", None)
+        parent_name = getattr(doc, "parent", None)
+        if parent_dt and parent_name:
+            parent_doc = frappe.get_doc(parent_dt, parent_name)
+            parent_doc.check_permission("read")
+        else:
+            doc.check_permission("read")
+    else:
+        if doc_type == "Document" or doc_type not in indexed_doctypes:
+            frappe.throw("This DocType is not configured for Indexed DocTypes Search.", frappe.PermissionError)
+        doc.check_permission("read")
+
+    rule = rules.get(doc_type, {})
+    excluded = _parse_excluded_fields(rule.get("excluded_fields"))
+    include_comments = rule.get("index_comments", True)
+    search_language = current_search_language()
+    plan = compile_match_plan(query, language=search_language)
+
+    title = get_document_title(doc)
+    parent_fields, parent_terms, parent_phrase = _collect_doc_preview_fields(
+        doc,
+        excluded,
+        plan,
+        query=query,
+    )
+    name_terms, name_phrase = _matched_terms_in_text(doc.name, plan)
+    title_terms, title_phrase = _matched_terms_in_text(title, plan)
+    parent_terms.update(name_terms)
+    parent_terms.update(title_terms)
+    parent_phrase = parent_phrase or name_phrase or title_phrase
+
+    if is_table_doc:
+        parent_dt = getattr(doc, "parenttype", "") or ""
+        parent_name = getattr(doc, "parent", "") or ""
+        parent_route = _desk_route(parent_dt, parent_name) if (parent_dt and parent_name) else ""
+        return {
+            "match_source": "child_table",
+            "doc_type": parent_dt or doc_type,
+            "doc_name": parent_name or doc_name,
+            "title": title,
+            "modified": str(getattr(doc, "modified", "") or ""),
+            "owner": str(getattr(doc, "owner", "") or ""),
+            "status": str(doc.get("status") or ""),
+            "route": parent_route or _desk_route(doc_type, doc_name),
+            "fields": [],
+            "matched_child_rows": [
+                {
+                    "table_fieldname": getattr(doc, "parentfield", "") or "",
+                    "table_label": doc_type,
+                    "child_doctype": doc_type,
+                    "row_name": doc.name,
+                    "idx": int(getattr(doc, "idx", 0) or 0),
+                    "matched_terms": len(parent_terms),
+                    "fields": parent_fields,
+                }
+            ],
+            "matched_comments": [],
+            "terms": list(plan.get("folded_terms") or ()),
+        }
+
+    matched_child_rows = []
+    for field in getattr(doc.meta, "fields", []) or []:
+        if field.fieldname in excluded:
+            continue
+        if field.fieldtype != "Table" or not _is_visible_field(field):
+            continue
+        table_label = field.label or field.fieldname
+        child_doctype = getattr(field, "options", "") or table_label
+        for idx_fallback, row in enumerate(doc.get(field.fieldname) or [], start=1):
+            row_fields, row_terms, row_phrase = _collect_doc_preview_fields(
+                row,
+                excluded,
+                plan,
+                query=query,
+            )
+            if not row_terms and not row_phrase:
+                continue
+            row_idx = int(getattr(row, "idx", 0) or idx_fallback)
+            matched_child_rows.append(
+                {
+                    "table_fieldname": field.fieldname,
+                    "table_label": table_label,
+                    "child_doctype": child_doctype,
+                    "row_name": str(getattr(row, "name", "") or ""),
+                    "idx": row_idx,
+                    "matched_terms": len(row_terms),
+                    "_phrase_hit": row_phrase,
+                    "fields": row_fields,
+                }
+            )
+
+    matched_child_rows.sort(
+        key=lambda item: (
+            1 if item.get("_phrase_hit") else 0,
+            int(item.get("matched_terms") or 0),
+            -int(item.get("idx") or 0),
+        ),
+        reverse=True,
+    )
+    matched_child_rows = matched_child_rows[:MAX_PREVIEW_CHILD_ROWS]
+    best_child_phrase = bool(matched_child_rows and matched_child_rows[0].get("_phrase_hit"))
+    best_child_terms = (
+        int(matched_child_rows[0].get("matched_terms") or 0)
+        if matched_child_rows
+        else 0
+    )
+    for item in matched_child_rows:
+        item.pop("_phrase_hit", None)
+
+    matched_comments = []
+    if include_comments and plan.get("folded_terms"):
+        try:
+            comment_rows = frappe.get_all(
+                "Comment",
+                filters={
+                    "reference_doctype": doc_type,
+                    "reference_name": doc_name,
+                    "comment_type": "Comment",
+                },
+                fields=["name", "owner", "creation", "content"],
+                order_by="creation desc",
+                limit_page_length=50,
+            )
+        except Exception:
+            comment_rows = []
+        for crow in comment_rows:
+            clean_comment = _plain_text(crow.get("content"), "Text Editor")
+            c_terms, c_phrase = _matched_terms_in_text(clean_comment, plan)
+            if c_terms or c_phrase:
+                matched_comments.append(
+                    {
+                        "name": crow.get("name") or "",
+                        "owner": crow.get("owner") or "",
+                        "creation": str(crow.get("creation") or ""),
+                        "content": _format_preview_value(
+                            clean_comment,
+                            "Text",
+                            query=query,
+                            folded_terms=plan.get("folded_terms") or (),
+                        ),
+                    }
+                )
+                if len(matched_comments) >= 5:
+                    break
+
+    child_is_primary = bool(
+        matched_child_rows
+        and (
+            (not parent_terms and not parent_phrase)
+            or (best_child_phrase and not parent_phrase)
+            or (best_child_terms > len(parent_terms) and not parent_phrase)
+        )
+    )
+
+    return {
+        "match_source": "child_table" if child_is_primary else "doctype",
+        "doc_type": doc_type,
+        "doc_name": doc_name,
+        "title": title,
+        "modified": str(getattr(doc, "modified", "") or ""),
+        "owner": str(getattr(doc, "owner", "") or ""),
+        "status": str(doc.get("status") or ""),
+        "route": _desk_route(doc_type, doc_name),
+        "fields": parent_fields,
+        "matched_child_rows": matched_child_rows,
+        "matched_comments": matched_comments,
+        "terms": list(plan.get("folded_terms") or ()),
+    }
 
 
 def _parse_excluded_fields(raw_excluded):

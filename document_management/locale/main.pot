@@ -2424,3 +2424,39 @@ msgstr ""
 
 msgid "Search customers, invoices, loans, or exact phrases..."
 msgstr ""
+
+msgid "preview record"
+msgstr ""
+
+msgid "Open Record"
+msgstr ""
+
+msgid "Open Row in Record"
+msgstr ""
+
+msgid "Open in New Tab"
+msgstr ""
+
+msgid "Loading record preview..."
+msgstr ""
+
+msgid "Unable to load record preview."
+msgstr ""
+
+msgid "Matched Child Row"
+msgstr ""
+
+msgid "Matched Child Rows ({0})"
+msgstr ""
+
+msgid "Full Record"
+msgstr ""
+
+msgid "Child Table Row: {0} (#{1})"
+msgstr ""
+
+msgid "Matching Comments"
+msgstr ""
+
+msgid "No visible fields to display."
+msgstr ""

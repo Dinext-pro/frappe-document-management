@@ -151,6 +151,100 @@
         }[get_file_type(doc)];
     }
 
+    function open_child_table_row(frm, table_fieldname, row_name, idx) {
+        if (!frm || !table_fieldname || !frm.fields_dict || !frm.fields_dict[table_fieldname]) {
+            return false;
+        }
+        const field = frm.fields_dict[table_fieldname];
+        const grid = field && field.grid;
+        if (!grid) return false;
+
+        if (typeof frm.scroll_to_field === 'function') {
+            try {
+                frm.scroll_to_field(table_fieldname);
+            } catch (e) {}
+        }
+
+        const numericIdx = parseInt(idx, 10) || 0;
+        if (grid.grid_pagination && numericIdx > 0) {
+            const pageLength = Number(grid.grid_pagination.page_length) || 50;
+            const targetPage = Math.ceil(numericIdx / pageLength);
+            if (targetPage > 1 && typeof grid.grid_pagination.go_to_page === 'function') {
+                grid.grid_pagination.go_to_page(targetPage);
+            }
+        }
+
+        let gridRow = (row_name && grid.grid_rows_by_docname && grid.grid_rows_by_docname[row_name]) || null;
+        if (!gridRow && Array.isArray(grid.grid_rows)) {
+            gridRow = grid.grid_rows.find((row) => (
+                row && row.doc && (
+                    (row_name && row.doc.name === row_name)
+                    || (numericIdx > 0 && Number(row.doc.idx) === numericIdx)
+                )
+            )) || null;
+        }
+        if (!gridRow) return false;
+
+        if (typeof gridRow.toggle_view === 'function') {
+            gridRow.toggle_view(true);
+        }
+        const rowEl = gridRow.wrapper && (gridRow.wrapper[0] || gridRow.wrapper);
+        if (rowEl && typeof rowEl.scrollIntoView === 'function') {
+            try {
+                rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch (e) {}
+        }
+        return true;
+    }
+
+    function focus_child_row_on_form(doc_type, doc_name, table_fieldname, row_name, idx, maxAttempts = 30) {
+        if (typeof window === 'undefined' || !table_fieldname) return;
+        let attempts = 0;
+        const tryOpen = () => {
+            attempts += 1;
+            const frm = window.cur_frm;
+            const matchesDoc = frm
+                && (!doc_type || frm.doctype === doc_type)
+                && (!doc_name || frm.docname === doc_name);
+            if (matchesDoc && open_child_table_row(frm, table_fieldname, row_name, idx)) {
+                return;
+            }
+            if (attempts < maxAttempts) {
+                window.setTimeout(tryOpen, 150);
+            }
+        };
+        window.setTimeout(tryOpen, 120);
+    }
+
+    function consume_child_row_url_params() {
+        if (typeof window === 'undefined' || !window.location) return;
+        const params = new URLSearchParams(window.location.search || '');
+        const tableField = params.get('dm_child_field');
+        if (!tableField) return;
+        const rowName = params.get('dm_child_row') || '';
+        const idx = parseInt(params.get('dm_child_idx'), 10) || 0;
+
+        if (window.history && typeof window.history.replaceState === 'function') {
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete('dm_child_field');
+            cleanUrl.searchParams.delete('dm_child_row');
+            cleanUrl.searchParams.delete('dm_child_idx');
+            window.history.replaceState({}, '', cleanUrl.toString());
+        }
+        focus_child_row_on_form(null, null, tableField, rowName, idx);
+    }
+
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', consume_child_row_url_params);
+        } else {
+            window.setTimeout(consume_child_row_url_params, 100);
+        }
+        if (typeof frappe !== 'undefined' && frappe.router && typeof frappe.router.on === 'function') {
+            frappe.router.on('change', consume_child_row_url_params);
+        }
+    }
+
     return {
         markdown_anchor_slug,
         escape_html,
@@ -165,5 +259,7 @@
         is_md,
         get_file_type,
         get_icon,
+        open_child_table_row,
+        focus_child_row_on_form,
     };
 }));

@@ -1279,3 +1279,14 @@ class TestPhase10To12Improvements(TestCase):
         ci_yml = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         for suite in ("test_ocr_worker.py", "test_providers.py", "test_archive_sanity.py", "test_indexer.py"):
             self.assertIn(suite, ci_yml)
+
+        console_py = (
+            REPO_ROOT
+            / "document_management"
+            / "frappe_document_management"
+            / "page"
+            / "document_management_console"
+            / "document_management_console.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('fields=["count(', console_py)
+        self.assertIn('{"COUNT": "*", "as": "total"}', console_py)

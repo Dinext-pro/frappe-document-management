@@ -825,10 +825,15 @@ def get_documents(
             count_rows = frappe.get_list(
                 "Document",
                 filters=filters,
-                fields=["count(name) as total"],
+                fields=[{"COUNT": "*", "as": "total"}],
                 limit_page_length=1,
             )
-            total_count = int((count_rows[0].get("total") if count_rows else 0) or 0)
+            row = count_rows[0] if count_rows else {}
+            total_count = int(
+                (row.get("total") if hasattr(row, "get") else 0)
+                or (next(iter(row.values()), 0) if isinstance(row, dict) else 0)
+                or 0
+            )
 
     if ranked_names is not None:
         by_name = {doc.name: doc for doc in docs}

@@ -1692,6 +1692,12 @@ class DocumentManagementConsole {
                                 label: __('Passcode (optional, min 4 chars)')
                             },
                             {
+                                fieldname: 'created_link',
+                                fieldtype: 'Data',
+                                label: __('Created share link'),
+                                hidden: 1
+                            },
+                            {
                                 fieldname: 'links_html',
                                 fieldtype: 'HTML',
                                 label: __('Existing links')
@@ -1710,14 +1716,20 @@ class DocumentManagementConsole {
                                     max_views: values.max_views || 0,
                                     passcode: values.passcode || null
                                 },
-                                callback: (r) => {
-                                    if (!r.exc && r.message?.url) {
-                                        navigator.clipboard.writeText(r.message.url);
-                                        frappe.show_alert({
-                                            message: __('Share link copied to clipboard'),
-                                            indicator: 'green'
-                                        });
-                                        load_links();
+                                callback: async (r) => {
+                                    if (r.exc || !r.message?.url) return;
+                                    const url = r.message.url;
+                                    dialog.set_df_property('created_link', 'hidden', 0);
+                                    await dialog.set_value('created_link', url);
+                                    const input = dialog.fields_dict.created_link.$input.get(0);
+                                    input.readOnly = true;
+                                    load_links();
+                                    try {
+                                        await navigator.clipboard.writeText(url);
+                                        frappe.show_alert({message: __('Share link copied to clipboard'), indicator: 'green'});
+                                    } catch {
+                                        input.focus();
+                                        input.select();
                                     }
                                 }
                             });

@@ -105,17 +105,36 @@ def _plain_text(value, fieldtype=None):
 # The private shared index nominates candidates. A response is built from the
 # current record, using the reader's field grants, the current settings and files.
 _INDEX_FIELDS = object()
+_TABLE_FIELD_TYPES = ("Table", "Table MultiSelect")
+
+
+def _readable_table_fields(meta, reader):
+    # Frappe v15 omits table fields from get_permitted_fieldnames. As in
+    # has_child_permission, a readable parent grants level 0, higher levels need read access.
+    levels = None
+    for field in meta.fields:
+        if field.fieldtype not in _TABLE_FIELD_TYPES or not _is_visible_field(field, _INDEX_FIELDS):
+            continue
+        level = getattr(field, "permlevel", 0) or 0
+        if level:
+            if levels is None:
+                levels = meta.get_permlevel_access("read", user=reader)
+            if level not in levels:
+                continue
+        yield field
 
 
 def _permitted_fields(doc, reader):
     if reader is None or reader is _INDEX_FIELDS:
         return reader
-    return set(doc.meta.get_permitted_fieldnames(
+    permitted = set(doc.meta.get_permitted_fieldnames(
         parenttype=getattr(doc, "parenttype", None),
         user=reader,
         permission_type="read",
         with_virtual_fields=False,
     ))
+    permitted.update(field.fieldname for field in _readable_table_fields(doc.meta, reader))
+    return permitted
 
 
 def _is_visible_field(field, permitted=None):
@@ -1263,13 +1282,18 @@ def _can_offer_doctype(doctype):
     meta = frappe.get_meta(doctype)
     if not meta.istable:
         return frappe.has_permission(doctype, "read")
-    # Only offer configured child tables whose parent table field can be read.
-    for parent in frappe.get_all("DocField", filters={"options": doctype, "fieldtype": ["in", ["Table", "Table MultiSelect"]]}, pluck="parent"):
-        if frappe.has_permission(parent, "read"):
-            parent_meta = frappe.get_meta(parent)
-            fields = parent_meta.get_permitted_fieldnames(user=frappe.session.user)
-            if any(field.options == doctype and field.fieldname in fields and not field.hidden for field in parent_meta.get_table_fields()):
-                return True
+    # Metadata includes standard and custom tables, with property setters applied.
+    filters = {"options": doctype, "fieldtype": ["in", _TABLE_FIELD_TYPES]}
+    parents = set(frappe.get_all("DocField", filters=filters, pluck="parent"))
+    parents.update(frappe.get_all("Custom Field", filters=filters, pluck="dt"))
+    for parent in parents:
+        if not frappe.has_permission(parent, "read"):
+            continue
+        parent_meta = frappe.get_meta(parent)
+        if not parent_meta.istable and any(
+            field.options == doctype for field in _readable_table_fields(parent_meta, frappe.session.user)
+        ):
+            return True
     return False
 
 

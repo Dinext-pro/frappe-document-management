@@ -580,11 +580,13 @@ def test_live_field_comment_attachment_and_child_permissions(monkeypatch, tmp_pa
             super().__init__(fields, **values)
             self.doctype, self.name, self.allowed = doctype, name, allowed
             self.modified, self.owner = "2026-11-27", "search-test"
-            self.grants = {f.fieldname for f in fields}
+            self.grants = {f.fieldname for f in fields if f.fieldtype not in ("Table", "Table MultiSelect")}
+            self.table_read_levels = {0, 2}
             self.meta = SimpleNamespace(
                 fields=fields, title_field=None, istable=False,
                 get_field=lambda name: next((f for f in fields if f.fieldname == name), None),
                 get_permitted_fieldnames=lambda **kwargs: list(self.grants),
+                get_permlevel_access=lambda permission_type, user: self.table_read_levels,
             )
 
         def has_permission(self, *args, **kwargs):
@@ -592,7 +594,7 @@ def test_live_field_comment_attachment_and_child_permissions(monkeypatch, tmp_pa
 
     parent = Source("Task", "TASK-1", [
         _field("title", "Data"), _field("private_note", "Data", permlevel=1), _field("omitted", "Data"),
-        _field("items", "Table", options="Task Item", hidden=0), _field("attachment", "Attach"),
+        _field("items", "Table", options="Task Item", hidden=0, permlevel=2), _field("attachment", "Attach"),
     ], title="Visible title", private_note="RestrictedField", omitted="OmittedSetting")
     parent.meta.title_field = "title"
     parent.grants.remove("private_note")
@@ -660,10 +662,53 @@ def test_live_field_comment_attachment_and_child_permissions(monkeypatch, tmp_pa
     assert child_preview["matched_child_rows"][0]["row_name"] == "ROW-1"
     with pytest.raises(indexer.frappe.PermissionError):
         indexer.get_search_result_preview("Task Item", "ROW-2", "DeniedChild")
-    parent.grants.remove("items")
+    parent.table_read_levels.remove(2)
     with pytest.raises(indexer.frappe.PermissionError):
         indexer.get_search_result_preview("Task Item", "ROW-1", "VisibleChild")
     assert not rows("VisibleChild")
+
+
+def test_child_doctype_options_follow_standard_and_custom_table_permissions(monkeypatch):
+    from document_management.search import indexer
+
+    reader = "child-reader@example.test"
+    levels = {0}
+    parents = {"Standard Parent", "Custom Parent"}
+    standard = _field("lines", "Table", options="Line", permlevel=0, hidden=0)
+    custom = _field("extra_lines", "Table MultiSelect", options="Line", permlevel=2, hidden=0)
+    other = _field("other", "Table", options="Other Child", permlevel=0, hidden=0)
+
+    def meta(fields):
+        return SimpleNamespace(
+            istable=False, fields=fields, get_table_fields=lambda: fields,
+            get_permitted_fieldnames=lambda **kwargs: [],
+            get_permlevel_access=lambda permission_type, user: levels if (permission_type, user) == ("read", reader) else [],
+        )
+
+    def get_all(doctype, filters, pluck):
+        assert filters["options"] == "Line"
+        assert set(filters["fieldtype"][1]) == {"Table", "Table MultiSelect"}
+        return {("DocField", "parent"): ["Standard Parent"], ("Custom Field", "dt"): ["Custom Parent"]}[(doctype, pluck)]
+
+    metadata = {"Standard Parent": meta([standard]), "Custom Parent": meta([custom, other]), "Line": SimpleNamespace(istable=True)}
+    monkeypatch.setattr(indexer.frappe, "get_meta", metadata.__getitem__, raising=False)
+    monkeypatch.setattr(indexer.frappe, "session", SimpleNamespace(user=reader))
+    monkeypatch.setattr(indexer.frappe, "get_all", get_all)
+    monkeypatch.setattr(indexer.frappe, "has_permission", lambda doctype, ptype: doctype in parents and ptype == "read", raising=False)
+
+    assert indexer._can_offer_doctype("Line")
+    standard.hidden = 1
+    assert not indexer._can_offer_doctype("Line")
+    levels.add(2)
+    assert indexer._can_offer_doctype("Line")
+    custom.is_virtual = 1
+    assert not indexer._can_offer_doctype("Line")
+    custom.is_virtual = 0
+    parents.remove("Custom Parent")
+    assert not indexer._can_offer_doctype("Line")
+    parents.add("Custom Parent")
+    levels.remove(2)
+    assert not indexer._can_offer_doctype("Line")
 
 
 def test_sorted_pages_cover_all_readable_hits_and_break_ties(monkeypatch):

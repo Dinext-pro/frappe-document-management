@@ -238,7 +238,11 @@ def _make_version(attachment, preview_attachment="", ocr_status="Failed"):
 
 
 def _make_doc(version):
-    return SimpleNamespace(name="DOC-001", get_current_version=lambda: version)
+    return SimpleNamespace(
+        name="DOC-001",
+        get_current_version=lambda: version,
+        check_permission=lambda *args, **kwargs: True,
+    )
 
 
 def test_reprocess_ocr_enqueues_pdf_conversion_when_office_preview_missing():
@@ -246,7 +250,6 @@ def test_reprocess_ocr_enqueues_pdf_conversion_when_office_preview_missing():
     When an office document has no preview_attachment, reprocess_ocr must
     enqueue convert_office_to_pdf_job (not process_ocr directly).
     """
-    from unittest.mock import MagicMock
 
     version = _make_version("source.docx", preview_attachment="")
     doc = _make_doc(version)
@@ -263,7 +266,7 @@ def test_reprocess_ocr_enqueues_pdf_conversion_when_office_preview_missing():
         patch(
             "document_management.frappe_document_management.page"
             ".document_management_console.document_management_console.frappe.db"
-        ) as mock_db,
+        ),
         patch(
             "document_management.frappe_document_management.page"
             ".document_management_console.document_management_console.frappe.enqueue",

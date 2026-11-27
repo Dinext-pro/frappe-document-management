@@ -51,8 +51,12 @@ def ensure_document_management_settings():
         "index_path": "search_index",
         "trash_retention_days": 30,
         "export_retention_hours": 24,
+        "expiry_reminder_days": 30,
+        "send_expiry_email_reminders": 0,
         "enable_file_encryption": 0,
         "enable_folder_ingestion": 0,
+        "ingestion_min_file_age_seconds": 0,
+        "ingestion_map_subfolders_to_category": 0,
     }
 
     meta = frappe.get_meta(SETTINGS_DOCTYPE, cached=False)

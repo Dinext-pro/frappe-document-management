@@ -179,17 +179,37 @@ def _tag_names(tags, require_all=True):
     )
 
 
+def _parse_date_string(value):
+    try:
+        return str(getdate(value))
+    except Exception:
+        frappe.throw(f"Invalid date filter value: {value}")
+
+
 def _date_filter(fieldname, value):
     value = str(value or "").strip()
     if ".." in value:
         start, end = [part.strip() for part in value.split("..", 1)]
         if start and end:
-            return [fieldname, "between", [str(getdate(start)), str(getdate(end))]]
+            start_date = _parse_date_string(start)
+            end_date = _parse_date_string(end)
+            return [
+                fieldname,
+                "between",
+                [f"{start_date} 00:00:00", f"{end_date} 23:59:59"],
+            ]
     match = re.match(r"^(>=|<=|>|<)(.+)$", value)
     if match:
-        return [fieldname, match.group(1), str(getdate(match.group(2).strip()))]
-    date_value = str(getdate(value))
-    return [fieldname, "between", [date_value, date_value]]
+        op = match.group(1)
+        parsed = _parse_date_string(match.group(2).strip())
+        suffix = " 23:59:59" if op in {"<=", ">"} else " 00:00:00"
+        return [fieldname, op, f"{parsed}{suffix}"]
+    date_value = _parse_date_string(value)
+    return [
+        fieldname,
+        "between",
+        [f"{date_value} 00:00:00", f"{date_value} 23:59:59"],
+    ]
 
 
 def _combine_name_filter(filters, include_names, exclude_names):

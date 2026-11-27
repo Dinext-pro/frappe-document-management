@@ -1,0 +1,16 @@
+{
+  "name": "document_management",
+  "private": true,
+  "description": "Frontend build tooling for Frappe Document Management",
+  "scripts": {
+    "build:pdf-viewer": "esbuild document_management/public/js/pdf_search_viewer.source.js --bundle --format=iife --target=es2020 --minify --outfile=document_management/public/js/pdf_search_viewer.v5_7_284_10.js",
+    "copy:vendor": "node -e \"const fs=require('fs'),p=require('path');fs.mkdirSync('document_management/public/js/vendor',{recursive:true});[['vue/dist/vue.global.prod.js','vue.global.prod.js'],['marked/marked.min.js','marked.min.js'],['dompurify/dist/purify.min.js','purify.min.js']].forEach(([s,d])=>fs.copyFileSync(require.resolve(s),p.join('document_management/public/js/vendor',d)));\""
+  },
+  "devDependencies": {
+    "dompurify": "3.2.4",
+    "esbuild": "^0.25.0",
+    "marked": "15.0.7",
+    "pdfjs-dist": "5.7.284",
+    "vue": "3.5.13"
+  }
+}

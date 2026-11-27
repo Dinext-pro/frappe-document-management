@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 
@@ -392,6 +393,66 @@ LANGUAGE_ALIASES = {
 }
 
 TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+QUOTED_PHRASE_RE = re.compile(r'"([^"]+)"')
+EXCLUDED_TERM_RE = re.compile(r'(?:^|\s)-([^\W_]{2,})', re.UNICODE)
+
+
+def _build_latin1_byte_table():
+    table = bytearray(256)
+    for cp in range(256):
+        if cp == 0:
+            table[cp] = 0
+            continue
+        folded = "".join(
+            ch
+            for ch in unicodedata.normalize("NFKD", chr(cp))
+            if not unicodedata.combining(ch)
+        ).lower()
+        if len(folded) == 1 and 0 < ord(folded) < 256:
+            table[cp] = ord(folded)
+        else:
+            # Sentinel 0 forces fallback to full Unicode NFKD for rare chars (¼, ½, ¾, µ, etc.)
+            table[cp] = 0
+    return bytes(table)
+
+
+_LATIN1_BYTE_TABLE = _build_latin1_byte_table()
+_BMP_COMBINING_TABLE = {
+    cp: None
+    for cp in range(0x0300, 0x10000)
+    if unicodedata.combining(chr(cp))
+}
+
+
+def parse_search_syntax(query):
+    """Extract quoted phrases ("...") and negative terms (-word) from a query."""
+    raw = str(query or "")
+    phrases = [
+        " ".join(query_tokens(match.group(1)))
+        for match in QUOTED_PHRASE_RE.finditer(raw)
+        if query_tokens(match.group(1))
+    ]
+    without_phrases = QUOTED_PHRASE_RE.sub(" ", raw)
+    excluded = list(
+        dict.fromkeys(
+            match.group(1).lower()
+            for match in EXCLUDED_TERM_RE.finditer(without_phrases)
+        )
+    )
+    positive_text = EXCLUDED_TERM_RE.sub(" ", without_phrases)
+    return {
+        "phrases": list(dict.fromkeys(phrases)),
+        "excluded": excluded,
+        "positive_text": " ".join(positive_text.split()),
+    }
+
+
+def positive_query_text(query):
+    """Return query text stripped of -excluded terms for scoring, excerpts, and highlights."""
+    parsed = parse_search_syntax(query)
+    if not parsed["phrases"] and not parsed["excluded"]:
+        return str(query or "")
+    return f'{parsed["positive_text"]} {" ".join(parsed["phrases"])}'.strip()
 
 
 def normalize_language(language):
@@ -445,9 +506,21 @@ def query_tokens(query):
 
 
 def fold_text(value):
+    text = str(value or "")
+    if not text:
+        return ""
+    if text.isascii():
+        return text.lower()
+    if max(text) <= "\u00ff":
+        folded_bytes = text.encode("latin-1").translate(_LATIN1_BYTE_TABLE)
+        if b"\x00" not in folded_bytes:
+            return folded_bytes.decode("latin-1")
+    normalized = unicodedata.normalize("NFKD", text)
+    if max(normalized) < "\U00010000":
+        return normalized.translate(_BMP_COMBINING_TABLE).lower()
     return "".join(
         character
-        for character in unicodedata.normalize("NFKD", str(value or ""))
+        for character in normalized
         if not unicodedata.combining(character)
     ).lower()
 
@@ -476,18 +549,52 @@ def significant_terms(query, language=None):
     )
 
 
-def make_excerpt(content, query, maximum=360, language=None):
+def compile_match_plan(query, language=None):
+    positive = positive_query_text(query)
+    terms = significant_terms(positive, language=language)
+    folded_terms = tuple(dict.fromkeys(fold_text(term) for term in terms if term))
+    folded_query = " ".join(fold_text(positive).split())
+    return {
+        "folded_terms": folded_terms,
+        "folded_query": folded_query,
+        "total_terms": len(folded_terms),
+    }
+
+
+def make_excerpt(content, query, maximum=360, language=None, folded_terms=None):
     normalized = " ".join((content or "").split())
     if len(normalized) <= maximum:
         return normalized
 
-    folded_content, offsets = _fold_with_offsets(normalized)
-    positions = [
-        folded_content.find(fold_text(term))
-        for term in significant_terms(query, language=language)
-    ]
-    positions = [position for position in positions if position >= 0]
-    center = offsets[min(positions)] if positions and offsets else 0
+    if folded_terms is None:
+        positive = positive_query_text(query)
+        folded_terms = [
+            fold_text(term)
+            for term in significant_terms(positive, language=language)
+            if term
+        ]
+    else:
+        folded_terms = [fold_text(term) for term in folded_terms if term]
+
+    folded_content = fold_text(normalized)
+    if len(folded_content) == len(normalized):
+        positions = [
+            folded_content.find(term)
+            for term in folded_terms
+            if term
+        ]
+        positions = [position for position in positions if position >= 0]
+        center = min(positions) if positions else 0
+    else:
+        folded_content, offsets = _fold_with_offsets(normalized)
+        positions = [
+            folded_content.find(term)
+            for term in folded_terms
+            if term
+        ]
+        positions = [position for position in positions if position >= 0]
+        center = offsets[min(positions)] if positions and offsets else 0
+
     start = max(center - maximum // 3, 0)
     end = min(start + maximum, len(normalized))
     if end - start < maximum:
@@ -497,19 +604,59 @@ def make_excerpt(content, query, maximum=360, language=None):
     return prefix + normalized[start:end].strip() + suffix
 
 
-def search_match_details(query, doc_name="", title="", content="", language=None):
-    terms = significant_terms(query, language=language)
-    folded_terms = list(dict.fromkeys(fold_text(term) for term in terms))
-    folded_query = " ".join(fold_text(query).split())
+def _is_token_char(ch):
+    return ch != "_" and (ch.isalnum() or bool(TOKEN_RE.match(ch)))
+
+
+def _term_matches_haystack(term, haystack):
+    if not haystack or not term:
+        return False
+    term_len = len(term)
+    hay_len = len(haystack)
+    start = 0
+    while True:
+        idx = haystack.find(term, start)
+        if idx < 0:
+            return False
+        left_ok = idx == 0 or not _is_token_char(haystack[idx - 1])
+        right_idx = idx + term_len
+        right_ok = right_idx == hay_len or not _is_token_char(haystack[right_idx])
+        if left_ok and right_ok:
+            return True
+        start = idx + 1
+
+
+def _term_matches_any(term, haystacks):
+    for haystack in haystacks:
+        if _term_matches_haystack(term, haystack):
+            return True
+    return False
+
+
+def search_match_details(
+    query,
+    doc_name="",
+    title="",
+    content="",
+    language=None,
+    plan=None,
+):
+    if plan is None:
+        plan = compile_match_plan(query, language=language)
+    folded_query = plan["folded_query"]
+    folded_terms = plan["folded_terms"]
+    total_terms = plan["total_terms"]
+
     folded_name = " ".join(fold_text(doc_name).split())
     folded_title = " ".join(fold_text(title).split())
     folded_content = fold_text(content)
-    searchable = " ".join(
-        part for part in (folded_name, folded_title, folded_content) if part
+    haystacks = (folded_name, folded_title, folded_content)
+
+    matched_terms = sum(
+        1
+        for term in folded_terms
+        if _term_matches_any(term, haystacks)
     )
-    searchable_tokens = set(query_tokens(searchable))
-    matched_terms = sum(term in searchable_tokens for term in folded_terms)
-    total_terms = len(folded_terms)
     coverage = matched_terms / total_terms if total_terms else 0.0
 
     exact_name = bool(folded_query and folded_name == folded_query)
@@ -544,18 +691,95 @@ def search_match_details(query, doc_name="", title="", content="", language=None
     }
 
 
+def _one_edit(left, right):
+    """One insertion, deletion, substitution or adjacent transposition."""
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) > len(right):
+        left, right = right, left
+    i = next((i for i, char in enumerate(left) if char != right[i]), len(left))
+    if len(left) != len(right):
+        return left[i:] == right[i + 1:]
+    if left[i + 1:] == right[i + 1:]:
+        return True
+    return left[i:i + 2] == right[i:i + 2][::-1] and left[i + 2:] == right[i + 2:]
+
+
+class TextQuery:
+    """Match the current reader's text after candidate retrieval from a shared index."""
+
+    def __init__(self, query, language=None):
+        self.query = str(query or "").strip()
+        syntax = parse_search_syntax(self.query)
+        positive = positive_query_text(self.query)
+        self.terms = tuple(fold_text(t) for t in (significant_terms(positive, language) or query_tokens(positive)))
+        self.excluded = {fold_text(t) for t in syntax["excluded"]}
+        self.phrases = tuple(" " + fold_text(p) + " " for p in syntax["phrases"])
+        # Exclusions must be applied to the readable sources, never to private
+        # fields that happen to be present in the same shared index record.
+        self.candidate_query = " ".join([syntax["positive_text"], *(f'"{p}"' for p in syntax["phrases"])]).strip()
+
+    def matches(self, name, title, content="", *, relaxed=False, fuzzy=False):
+        if not self.terms:
+            return False
+        columns = [query_tokens(fold_text(value)) for value in (name, title, content)]
+        tokens = set().union(*columns)
+        if self.excluded.intersection(tokens):
+            return False
+        if self.phrases:
+            fields = [" " + " ".join(column) + " " for column in columns]
+            if not all(any(phrase in field for field in fields) for phrase in self.phrases):
+                return False
+        count = 0
+        for term in self.terms:
+            if (term in tokens
+                or (len(term) >= 3 and any(token.startswith(term) for token in columns[0]))
+                or (len(self.terms) == 1 and len(term) >= 4 and any(token.startswith(term) for token in columns[1]))
+                or (fuzzy and len(term) >= 4 and any(_one_edit(term, token) for token in tokens))):
+                count += 1
+        needed = max(1, (len(self.terms) + 1) // 2) if relaxed else len(self.terms)
+        return count >= needed
+
+
+def _iter_field_variants(field_weights, raw_text, folded_text):
+    """Yield (field, weight, variant) avoiding redundant raw/normalized duplicates."""
+    has_accent = raw_text != folded_text
+    for field, weight in field_weights.items():
+        if field.endswith("_normalized"):
+            yield field, weight, folded_text
+        elif f"{field}_normalized" in field_weights:
+            # Normalized sibling already indexes folded text for all records;
+            # only query the raw field when the user typed diacritics.
+            if has_accent:
+                yield field, weight, raw_text
+        else:
+            yield field, weight, raw_text
+            if has_accent:
+                yield field, weight, folded_text
+
+
 def build_natural_query(
     index,
     query,
     fields,
     language=None,
     require_all=True,
+    allow_prefix=True,
+    fuzzy=False,
 ):
     import tantivy
 
-    tokens = query_tokens(query)
-    terms = significant_terms(query, language=language)
+    parsed_syntax = parse_search_syntax(query)
+    positive_source = (
+        f'{parsed_syntax["positive_text"]} {" ".join(parsed_syntax["phrases"])}'.strip()
+        if (parsed_syntax["phrases"] or parsed_syntax["excluded"])
+        else str(query or "")
+    )
+    tokens = query_tokens(positive_source)
+    terms = significant_terms(positive_source, language=language)
     if not terms:
+        terms = list(dict.fromkeys(tokens))
+    if not terms and not parsed_syntax["phrases"]:
         return tantivy.Query.empty_query()
 
     field_weights = (
@@ -563,16 +787,80 @@ def build_natural_query(
         if isinstance(fields, dict)
         else {field: 1.0 for field in fields}
     )
+    schema = getattr(index, "schema", None)
+    has_regex = allow_prefix and hasattr(tantivy.Query, "regex_query") and schema is not None
+    has_fuzzy = fuzzy and hasattr(tantivy.Query, "fuzzy_term_query") and schema is not None
+    must_not_occur = getattr(tantivy.Occur, "MustNot", None)
+
+    doc_name_prefix_field = (
+        "doc_name_normalized"
+        if "doc_name_normalized" in field_weights
+        else ("doc_name" if "doc_name" in field_weights else None)
+    )
+    title_prefix_field = (
+        "title_normalized"
+        if "title_normalized" in field_weights
+        else ("title" if "title" in field_weights else None)
+    )
+    is_single_term = len(terms) == 1
+
     clauses = []
     for term in terms:
-        variants = list(dict.fromkeys([term, fold_text(term)]))
+        folded = fold_text(term)
         alternatives = []
-        for field, weight in field_weights.items():
-            for variant in variants:
-                parsed = index.parse_query(variant, [field])
+        for field, weight, variant in _iter_field_variants(field_weights, term, folded):
+            if has_fuzzy and len(variant) >= 4:
+                # Avoid running Levenshtein FST walks on both raw and normalized siblings
+                if not field.endswith("_normalized") and f"{field}_normalized" in field_weights:
+                    continue
+                try:
+                    fq = tantivy.Query.fuzzy_term_query(
+                        schema,
+                        field,
+                        variant,
+                        distance=1,
+                        transposition_cost_one=True,
+                        prefix=False,
+                    )
+                    if weight != 1:
+                        fq = tantivy.Query.boost_query(fq, float(weight) * 0.75)
+                    alternatives.append((tantivy.Occur.Should, fq))
+                except Exception:
+                    pass
+            else:
+                parsed = index.parse_query(json.dumps(variant), [field])
                 if weight != 1:
                     parsed = tantivy.Query.boost_query(parsed, float(weight))
                 alternatives.append((tantivy.Occur.Should, parsed))
+
+        if has_regex and not has_fuzzy:
+            if doc_name_prefix_field and len(folded) >= 3:
+                try:
+                    pq = tantivy.Query.regex_query(
+                        schema,
+                        doc_name_prefix_field,
+                        f"{re.escape(folded)}.*",
+                    )
+                    w = float(field_weights[doc_name_prefix_field])
+                    pq = tantivy.Query.boost_query(pq, max(w * 0.6, 0.5))
+                    alternatives.append((tantivy.Occur.Should, pq))
+                except Exception:
+                    pass
+            if is_single_term and title_prefix_field and len(folded) >= 4:
+                try:
+                    pq = tantivy.Query.regex_query(
+                        schema,
+                        title_prefix_field,
+                        f"{re.escape(folded)}.*",
+                    )
+                    w = float(field_weights[title_prefix_field])
+                    pq = tantivy.Query.boost_query(pq, max(w * 0.6, 0.5))
+                    alternatives.append((tantivy.Occur.Should, pq))
+                except Exception:
+                    pass
+
+        if not alternatives:
+            continue
         term_query = (
             alternatives[0][1]
             if len(alternatives) == 1
@@ -585,27 +873,67 @@ def build_natural_query(
             )
         )
 
-    if len(tokens) > 1:
-        phrases = list(
-            dict.fromkeys(
-                [
-                    " ".join(tokens),
-                    fold_text(" ".join(tokens)),
-                ]
+    # Explicit user-quoted phrases must match in at least one field
+    for user_phrase in parsed_syntax["phrases"]:
+        folded_phrase = fold_text(user_phrase)
+        phrase_alts = []
+        for field, weight, phrase_text in _iter_field_variants(
+            field_weights,
+            user_phrase,
+            folded_phrase,
+        ):
+            phrase_q = index.parse_query(f'"{phrase_text}"', [field])
+            phrase_q = tantivy.Query.boost_query(
+                phrase_q,
+                max(float(weight) * 2.5, 2.5),
             )
-        )
-        for field, weight in field_weights.items():
-            for phrase_text in phrases:
-                phrase = index.parse_query(f'"{phrase_text}"', [field])
+            phrase_alts.append((tantivy.Occur.Should, phrase_q))
+        if phrase_alts:
+            clauses.append(
+                (
+                    tantivy.Occur.Must,
+                    phrase_alts[0][1]
+                    if len(phrase_alts) == 1
+                    else tantivy.Query.boolean_query(phrase_alts),
+                )
+            )
+
+    if len(tokens) > 1 and not fuzzy:
+        raw_phrase = " ".join(tokens)
+        folded_phrase = fold_text(raw_phrase)
+        for field, weight, phrase_text in _iter_field_variants(
+            field_weights,
+            raw_phrase,
+            folded_phrase,
+        ):
+            phrase = index.parse_query(f'"{phrase_text}"', [field])
+            clauses.append(
+                (
+                    tantivy.Occur.Should,
+                    tantivy.Query.boost_query(
+                        phrase,
+                        max(float(weight) * 2.0, 2.0),
+                    ),
+                )
+            )
+
+    if must_not_occur is not None:
+        for excluded_term in parsed_syntax["excluded"]:
+            folded_excl = fold_text(excluded_term)
+            for field, _, variant in _iter_field_variants(
+                field_weights,
+                excluded_term,
+                folded_excl,
+            ):
                 clauses.append(
                     (
-                        tantivy.Occur.Should,
-                        tantivy.Query.boost_query(
-                            phrase,
-                            max(float(weight) * 2.0, 2.0),
-                        ),
+                        must_not_occur,
+                        index.parse_query(json.dumps(variant), [field]),
                     )
                 )
+
+    if not clauses:
+        return tantivy.Query.empty_query()
     if len(clauses) == 1:
         return clauses[0][1]
     return tantivy.Query.boolean_query(clauses)

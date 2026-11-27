@@ -24,6 +24,8 @@ class TestGuestShareResolver(TestCase):
             self.addCleanup(delattr, frappe.local, "flags")
         else:
             self.enterContext(patch.dict(flags, {"in_test": True}))
+        self.enterContext(patch.object(frappe, "_", side_effect=str))
+        self.counter = self.enterContext(patch.object(sharing, "_consume_share_view"))
         self.resolver = self.enterContext(patch.object(frappe, "get_attr")).return_value
         self.enterContext(patch.object(sharing, "_get_share_link", return_value=self.link))
         self.enterContext(patch.object(frappe, "get_doc", return_value=self.document))
@@ -65,6 +67,7 @@ class TestGuestShareResolver(TestCase):
             with self.subTest(mode=mode):
                 response = sharing.download_shared_document("test-token", download=mode)
                 self.resolver.assert_called_with(self.link, self.document, bool(mode))
+                self.counter.assert_called_with(self.link, token_hash=sharing._token_hash("test-token"))
                 self.assertEqual(response.content_type, mime_type)
                 self.assertEqual(response.get_data(), b"data")
                 self.assertTrue(response.headers["Content-Disposition"].startswith(disposition))
@@ -80,6 +83,7 @@ class TestGuestShareResolver(TestCase):
         with self.assertRaises(frappe.PermissionError):
             sharing.download_shared_document("test-token")
         self.resolver.assert_not_called()
+        self.counter.assert_not_called()
 
     def test_portal_response_never_caches_or_sends_the_token_in_a_referrer(self):
         response = Response()

@@ -43,6 +43,8 @@
   "archive_management_section",
   "trash_retention_days",
   "export_retention_hours",
+  "expiry_reminder_days",
+  "send_expiry_email_reminders",
   "storage_section",
   "enable_file_encryption",
   "file_storage_path_template",
@@ -51,6 +53,10 @@
   "ingestion_folder_path",
   "ingestion_done_folder_path",
   "ingestion_error_folder_path",
+  "ingestion_default_owner",
+  "ingestion_default_category",
+  "ingestion_min_file_age_seconds",
+  "ingestion_map_subfolders_to_category",
   "legacy_section",
   "semantic_model_type",
   "openai_model",
@@ -340,6 +346,21 @@
    "label": "Export Retention (Hours)"
   },
   {
+   "default": "30",
+   "description": "Send daily reminders for documents expiring, due for review, or overdue within this many days. Set to 0 to disable reminders.",
+   "fieldname": "expiry_reminder_days",
+   "fieldtype": "Int",
+   "label": "Expiry & Review Reminder Window (Days)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:cint(doc.expiry_reminder_days) > 0",
+   "description": "Also email document owners when expiry or review reminders are triggered.",
+   "fieldname": "send_expiry_email_reminders",
+   "fieldtype": "Check",
+   "label": "Send Expiry Email Reminders"
+  },
+  {
    "fieldname": "storage_section",
    "fieldtype": "Section Break",
    "label": "Physical Storage"
@@ -389,6 +410,38 @@
    "fieldname": "ingestion_error_folder_path",
    "fieldtype": "Data",
    "label": "Error Folder Path"
+  },
+  {
+   "depends_on": "eval:doc.enable_folder_ingestion",
+   "description": "Optional owner assigned to ingested documents. Defaults to Administrator.",
+   "fieldname": "ingestion_default_owner",
+   "fieldtype": "Link",
+   "label": "Default Ingestion Owner",
+   "options": "User"
+  },
+  {
+   "depends_on": "eval:doc.enable_folder_ingestion",
+   "description": "Optional default category applied to ingested documents.",
+   "fieldname": "ingestion_default_category",
+   "fieldtype": "Link",
+   "label": "Default Ingestion Category",
+   "options": "Document Category"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_folder_ingestion",
+   "description": "Minimum age in seconds before a file is ingested, to avoid importing files still being copied.",
+   "fieldname": "ingestion_min_file_age_seconds",
+   "fieldtype": "Int",
+   "label": "Minimum File Age (Seconds)"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.enable_folder_ingestion",
+   "description": "Scan immediate subfolders and match subfolder names to existing Document Categories.",
+   "fieldname": "ingestion_map_subfolders_to_category",
+   "fieldtype": "Check",
+   "label": "Map Subfolders to Categories"
   }
  ],
  "issingle": 1,

@@ -1,7 +1,10 @@
 import os
+from html import escape
 
 import frappe
-from document_management.frappe_document_management.utils.document_provider import get_standalone_document, standalone_filters
+from document_management.frappe_document_management.utils.document_provider import (
+    OWNER_FIELD, get_standalone_document, standalone_filters,
+)
 from frappe.utils import add_days, add_to_date, now_datetime
 
 from document_management.frappe_document_management.utils.archive_portability import (
@@ -10,6 +13,7 @@ from document_management.frappe_document_management.utils.archive_portability im
 )
 from document_management.frappe_document_management.utils.storage_paths import (
     private_file_path,
+    prune_empty_parent_dirs,
 )
 
 
@@ -66,6 +70,7 @@ def _delete_physical_files(paths):
         try:
             if path.exists():
                 os.remove(path)
+            prune_empty_parent_dirs(path)
         except Exception:
             frappe.log_error(
                 title="Document Physical File Cleanup Error",
@@ -164,3 +169,138 @@ def purge_expired_exports():
                 message=frappe.get_traceback(),
             )
     return deleted
+
+
+def _expiry_reminder_settings(days_ahead=None):
+    configured_days = days_ahead
+    send_email = False
+    try:
+        if configured_days is None:
+            raw_days = frappe.db.get_single_value(
+                "Document Management Settings",
+                "expiry_reminder_days",
+            )
+            configured_days = 30 if raw_days in (None, "") else int(raw_days)
+        raw_email = frappe.db.get_single_value(
+            "Document Management Settings",
+            "send_expiry_email_reminders",
+        )
+        send_email = bool(int(raw_email or 0))
+    except Exception:
+        if configured_days is None:
+            configured_days = 30
+    return int(configured_days or 0), send_email
+
+
+def notify_expiring_documents(days_ahead=None):
+    """Send Notification Log (and optional email) reminders for expiring, due, or overdue documents."""
+    from frappe.utils import getdate, today
+
+    reminder_days, send_email = _expiry_reminder_settings(days_ahead=days_ahead)
+    if reminder_days <= 0:
+        return []
+
+    today_date = getdate(today())
+    cutoff_date = getdate(add_days(today_date, reminder_days))
+    notified = []
+
+    has_provider = frappe.get_meta("Document").has_field(OWNER_FIELD)
+    for fieldname, upcoming, overdue in (
+        ("expiry_date", "Document {0} is expiring on {1}", "Document {0} is expired on {1}"),
+        ("review_date", "Document {0} is due for review on {1}", "Document {0} is overdue for review on {1}"),
+    ):
+        fields = ["name", "title", "owner", fieldname]
+        if has_provider:
+            fields.append(OWNER_FIELD)
+        docs = frappe.get_all(
+            "Document",
+            filters={
+                "is_deleted": 0,
+                "status": ["!=", "Obsolete"],
+                fieldname: ["<=", str(cutoff_date)],
+            },
+            fields=fields,
+            limit_page_length=0,
+        )
+        for row in docs:
+            raw_target = row.get(fieldname)
+            if not raw_target:
+                continue
+            owner = row.get("owner")
+            if not owner or owner == "Guest":
+                continue
+            doc_name = row["name"]
+            target_date = getdate(raw_target)
+            template = overdue if target_date < today_date else upcoming
+            doc_title = row.get("title") or doc_name
+            link = None
+            if provider := row.get(OWNER_FIELD):
+                handlers = frappe.get_hooks("document_management_reminder_permission", default={}).get(provider, ())
+                if len(handlers) != 1:
+                    continue
+                try:
+                    visible = frappe.get_attr(handlers[0])(doc_name, owner)
+                    if not visible:
+                        continue
+                    if isinstance(visible, dict):
+                        doc_title = visible["title"]
+                        link = visible.get("link")
+                    else:
+                        doc_title = visible
+                    language = frappe.db.get_value("User", owner, "language")
+                    template = frappe._(template, lang=language)
+                except Exception:
+                    frappe.log_error(title="Document Reminder Permission Error", message=frappe.get_traceback())
+                    continue
+            subject = template.format(doc_title, target_date.isoformat())
+            already_sent = frappe.db.exists(
+                "Notification Log",
+                {
+                    "document_type": "Document",
+                    "document_name": doc_name,
+                    "for_user": owner,
+                    "subject": subject,
+                },
+            )
+            if already_sent:
+                continue
+            try:
+                frappe.get_doc(
+                    {
+                        "doctype": "Notification Log",
+                        "subject": subject,
+                        "type": "Alert",
+                        "document_type": "Document",
+                        "document_name": doc_name,
+                        "for_user": owner,
+                        **({"link": link} if link else {}),
+                    }
+                ).insert(ignore_permissions=True)
+                if send_email:
+                    try:
+                        email = frappe.db.get_value("User", owner, "email") or owner
+                        if email and "@" in str(email):
+                            frappe.sendmail(
+                                recipients=[email],
+                                subject=subject,
+                                message=(
+                                    f'<a href="{escape(frappe.utils.get_url(link), quote=True)}">{escape(subject)}</a>'
+                                    if link else subject
+                                ),
+                                reference_doctype="Document",
+                                reference_name=doc_name,
+                            )
+                    except Exception:
+                        frappe.log_error(
+                            title="Document Expiry Email Reminder Error",
+                            message=frappe.get_traceback(),
+                        )
+                notified.append(doc_name)
+            except Exception:
+                frappe.log_error(
+                    title="Document Expiry Notification Error",
+                    message=frappe.get_traceback(),
+                )
+    if notified:
+        frappe.db.commit()
+    return notified

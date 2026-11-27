@@ -2269,3 +2269,387 @@ msgstr "sistema"
 #: document_management/frappe_document_management/doctype/document_chat_message/document_chat_message.json
 msgid "user"
 msgstr "usuario"
+
+msgid "Check System Health"
+msgstr "Comprobar salud del sistema"
+
+msgid "Document Management System Health"
+msgstr "Salud del sistema de gestión documental"
+
+msgid "System Binaries"
+msgstr "Binarios del sistema"
+
+msgid "Search & RAG Indexes"
+msgstr "Índices de búsqueda y RAG"
+
+msgid "Full-text (Tantivy)"
+msgstr "Texto completo (Tantivy)"
+
+msgid "RAG Index"
+msgstr "Índice RAG"
+
+msgid "AI Endpoints"
+msgstr "Endpoints de IA"
+
+msgid "Missing / Error"
+msgstr "Faltante / Error"
+
+msgid "Advanced Search Syntax"
+msgstr "Sintaxis de búsqueda avanzada"
+
+msgid "Advanced search syntax"
+msgstr "Sintaxis de búsqueda avanzada"
+
+msgid "Not enough evidence was found in the available documents."
+msgstr "No se encontró evidencia suficiente en los documentos disponibles."
+
+msgid "Document permissions changed while generating the answer. Please ask the question again."
+msgstr "Los permisos de los documentos cambiaron durante la generación. Vuelva a realizar la pregunta."
+
+msgid "Unable to generate a response. Check the AI provider configuration."
+msgstr "No fue posible generar la respuesta. Revise la configuración del proveedor de IA."
+
+msgid "Preview unavailable"
+msgstr "Vista previa no disponible"
+
+msgid "Use the Download button to open this file."
+msgstr "Use el botón Descargar para abrir este archivo."
+
+msgid "Could not load preview."
+msgstr "No se pudo cargar la vista previa."
+
+msgid "Could not load the PDF viewer."
+msgstr "No se pudo cargar el visor PDF."
+
+msgid "Loading document..."
+msgstr "Cargando documento..."
+
+msgid "Protected Document"
+msgstr "Documento protegido"
+
+msgid "Passcode Required"
+msgstr "Se requiere código de acceso"
+
+msgid "Enter the passcode to view this shared document."
+msgstr "Ingrese el código de acceso para ver este documento compartido."
+
+msgid "Invalid passcode. Please try again."
+msgstr "Código de acceso inválido. Intente nuevamente."
+
+msgid "Passcode"
+msgstr "Código de acceso"
+
+msgid "Unlock Document"
+msgstr "Desbloquear documento"
+
+msgid "Maximum views (0 = unlimited)"
+msgstr "Vistas máximas (0 = ilimitadas)"
+
+msgid "Passcode (optional, min 4 chars)"
+msgstr "Código de acceso (opcional, mín. 4 caracteres)"
+
+msgid "Export Markdown"
+msgstr "Exportar a Markdown"
+
+msgid "From Date"
+msgstr "Desde fecha"
+
+msgid "To Date"
+msgstr "Hasta fecha"
+
+msgid "Clear Filters"
+msgstr "Limpiar filtros"
+
+msgid "Copy"
+msgstr "Copiar"
+
+msgid "Copied to clipboard"
+msgstr "Copiado al portapapeles"
+
+msgid "Unable to copy to clipboard."
+msgstr "No se pudo copiar al portapapeles."
+
+msgid "Version History"
+msgstr "Historial de versiones"
+
+msgid "Quick Edit"
+msgstr "Edición rápida"
+
+msgid "View OCR Text"
+msgstr "Ver texto OCR"
+
+msgid "No OCR text extracted yet."
+msgstr "Aún no se ha extraído texto OCR."
+
+msgid "Rotate clockwise"
+msgstr "Rotar 90°"
+
+msgid "Go to page"
+msgstr "Ir a la página"
+
+msgid "Sort: Most recent"
+msgstr "Orden: Más recientes"
+
+msgid "Sort: Oldest"
+msgstr "Orden: Más antiguos"
+
+msgid "Sort: Title A-Z"
+msgstr "Orden: Título A-Z"
+
+msgid "Sort: Title Z-A"
+msgstr "Orden: Título Z-A"
+
+msgid "Sort: Code"
+msgstr "Orden: Código"
+
+msgid "Sort: Created"
+msgstr "Orden: Fecha de creación"
+
+msgid "(Optional)"
+msgstr "(Opcional)"
+
+msgid "Preview version"
+msgstr "Previsualizar versión"
+
+msgid "Sorted by search relevance"
+msgstr "Ordenado por relevancia de búsqueda"
+
+msgid "Expiry & Review Reminder Window (Days)"
+msgstr "Ventana de recordatorio de vencimiento y revisión (días)"
+
+msgid "Send Expiry Email Reminders"
+msgstr "Enviar recordatorios de vencimiento por correo"
+
+msgid "Maintenance"
+msgstr "Mantenimiento"
+
+msgid "Run Archive Sanity Check"
+msgstr "Ejecutar auditoría de integridad"
+
+msgid "Checking document archive integrity..."
+msgstr "Comprobando la integridad del archivo documental..."
+
+msgid "Archive Sanity Check"
+msgstr "Auditoría de integridad del archivo"
+
+msgid "Documents checked"
+msgstr "Documentos revisados"
+
+msgid "Versions checked"
+msgstr "Versiones revisadas"
+
+msgid "Errors"
+msgstr "Errores"
+
+msgid "Warnings"
+msgstr "Advertencias"
+
+msgid "Severity"
+msgstr "Severidad"
+
+msgid "Target"
+msgstr "Objetivo"
+
+msgid "Message"
+msgstr "Mensaje"
+
+msgid "Showing first 100 issues."
+msgstr "Mostrando los primeros 100 problemas."
+
+msgid "No archive integrity issues found."
+msgstr "No se encontraron problemas de integridad en el archivo."
+
+msgid "Encrypt Existing Files"
+msgstr "Cifrar archivos existentes"
+
+msgid "Encrypt all unencrypted private Document files in the background using the site encryption key?"
+msgstr "¿Cifrar en segundo plano todos los archivos privados de Documentos sin cifrar usando la clave de cifrado del sitio?"
+
+msgid "Background encryption job queued"
+msgstr "Trabajo de cifrado en segundo plano encolado"
+
+msgid "Storage & Ingestion"
+msgstr "Almacenamiento e Ingesta"
+
+msgid "File Encryption at Rest"
+msgstr "Cifrado de archivos en reposo"
+
+msgid "Disabled"
+msgstr "Deshabilitado"
+
+msgid "File (Drag & Drop)"
+msgstr "Archivo (arrastrar y soltar)"
+
+msgid "Search indexed operational records. Supports \"exact phrases\", -exclusions, prefixes, and typo tolerance."
+msgstr "Busca registros operativos indexados. Admite \"frases exactas\", -exclusiones, prefijos y tolerancia a errores tipográficos."
+
+msgid "Search customers, invoices, loans, or \"exact phrase\" -exclude..."
+msgstr "Buscar clientes, facturas, préstamos o \"frase exacta\" -excluir..."
+
+msgid "Clear search (Esc)"
+msgstr "Limpiar búsqueda (Esc)"
+
+msgid "Relevance"
+msgstr "Relevancia"
+
+msgid "Most recent"
+msgstr "Más reciente"
+
+msgid "Oldest"
+msgstr "Más antiguo"
+
+msgid "Title A-Z"
+msgstr "Título A-Z"
+
+msgid "From"
+msgstr "Desde"
+
+msgid "To"
+msgstr "Hasta"
+
+msgid "Per page"
+msgstr "Por página"
+
+msgid "Reset filters"
+msgstr "Restablecer filtros"
+
+msgid "Enter a query to search the configured indexes."
+msgstr "Ingresa una consulta para buscar en los índices configurados."
+
+msgid "Tip: Press / to focus, Up/Down to navigate results, Enter to open, Esc to clear."
+msgstr "Consejo: Pulsa / para enfocar, ↑/↓ para navegar resultados, Enter para abrir, Esc para limpiar."
+
+msgid "Index Status"
+msgstr "Estado del índice"
+
+msgid "Indexed DocTypes Search Status"
+msgstr "Estado de búsqueda de DocTypes indexados"
+
+msgid "Indexed DocTypes Search index rebuilt"
+msgstr "Índice de búsqueda de DocTypes reconstruido"
+
+msgid "Ready"
+msgstr "Listo"
+
+msgid "Rebuild Required"
+msgstr "Requiere reconstrucción"
+
+msgid "Total Indexed"
+msgstr "Total indexado"
+
+msgid "Last Rebuilt"
+msgstr "Última reconstrucción"
+
+msgid "Generation"
+msgstr "Generación"
+
+msgid "DocType"
+msgstr "DocType"
+
+msgid "No DocTypes configured for indexing."
+msgstr "No hay DocTypes configurados para indexar."
+
+msgid "Rebuild Index Now"
+msgstr "Reconstruir índice ahora"
+
+msgid "Recent:"
+msgstr "Recientes:"
+
+msgid "Clear history"
+msgstr "Limpiar historial"
+
+msgid "Similar match"
+msgstr "Coincidencia similar"
+
+msgid "Modified"
+msgstr "Modificado"
+
+msgid "Index Comments"
+msgstr "Indexar comentarios"
+
+msgid "Index PDF Attachments"
+msgstr "Indexar PDFs adjuntos"
+
+msgid "Excluded Fields"
+msgstr "Campos excluidos"
+
+msgid "Search Syntax & Shortcuts"
+msgstr "Sintaxis de búsqueda y atajos"
+
+msgid "Match an exact phrase across title, ID, content, or comments"
+msgstr "Coincidir con una frase exacta en título, ID, contenido o comentarios"
+
+msgid "Exclude records containing a specific term"
+msgstr "Excluir registros que contengan un término específico"
+
+msgid "Prefix matching on record IDs and titles"
+msgstr "Coincidencia por prefijo en IDs y títulos de registros"
+
+msgid "Automatic typo-tolerant fallback when no exact matches exist"
+msgstr "Respaldo automático tolerante a errores tipográficos cuando no hay coincidencias exactas"
+
+msgid "Keyboard shortcuts"
+msgstr "Atajos de teclado"
+
+msgid "focus search"
+msgstr "enfocar búsqueda"
+
+msgid "navigate results"
+msgstr "navegar resultados"
+
+msgid "open record"
+msgstr "abrir registro"
+
+msgid "open in new tab"
+msgstr "abrir en nueva pestaña"
+
+msgid "clear search"
+msgstr "limpiar búsqueda"
+
+msgid "No exact matches found. Showing similar results."
+msgstr "No se encontraron coincidencias exactas. Mostrando resultados similares."
+
+msgid "Indexed DocTypes configuration changed. Rebuild Indexed DocTypes Search for the new settings to apply to existing records."
+msgstr "La configuración de DocTypes indexados cambió. Reconstruye Indexed DocTypes Search para aplicar los nuevos ajustes a los registros existentes."
+
+msgid "Search indexed operational records. Supports exact phrases, exclusions, prefixes, and typo tolerance."
+msgstr "Busca registros operativos indexados. Admite frases exactas, exclusiones, prefijos y tolerancia a errores tipográficos."
+
+msgid "Search customers, invoices, loans, or exact phrases..."
+msgstr "Buscar clientes, facturas, préstamos o frases exactas..."
+
+msgid "preview record"
+msgstr "previsualizar registro"
+
+msgid "Open Record"
+msgstr "Abrir registro"
+
+msgid "Open Row in Record"
+msgstr "Abrir línea en el registro"
+
+msgid "Open in New Tab"
+msgstr "Abrir en nueva pestaña"
+
+msgid "Loading record preview..."
+msgstr "Cargando vista previa del registro..."
+
+msgid "Unable to load record preview."
+msgstr "No se pudo cargar la vista previa del registro."
+
+msgid "Matched Child Row"
+msgstr "Línea de tabla hija coincidente"
+
+msgid "Matched Child Rows ({0})"
+msgstr "Líneas de tabla hija coincidentes ({0})"
+
+msgid "Full Record"
+msgstr "Registro completo"
+
+msgid "Child Table Row: {0} (#{1})"
+msgstr "Línea de tabla hija: {0} (#{1})"
+
+msgid "Matching Comments"
+msgstr "Comentarios coincidentes"
+
+msgid "No visible fields to display."
+msgstr "No hay campos visibles para mostrar."

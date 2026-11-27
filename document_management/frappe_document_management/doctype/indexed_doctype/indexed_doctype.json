@@ -4,16 +4,39 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "document_type"
+  "document_type",
+  "index_comments",
+  "index_attachments",
+  "excluded_fields"
  ],
  "fields": [
   {
    "fieldname": "document_type",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Document Type",
    "options": "DocType",
-   "reqd": 1,
-   "in_list_view": 1
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "index_comments",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Index Comments"
+  },
+  {
+   "default": "0",
+   "fieldname": "index_attachments",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Index PDF Attachments"
+  },
+  {
+   "description": "Optional comma-separated list of fieldnames to exclude from indexing.",
+   "fieldname": "excluded_fields",
+   "fieldtype": "Small Text",
+   "label": "Excluded Fields"
   }
  ],
  "istable": 1,

@@ -16,6 +16,7 @@ frappe.ui.form.on("Document", {
 		});
 	},
 	refresh(frm) {
+        if (frm.doc.custom_document_management_provider) return;
         apply_department_capabilities(frm);
         if (!frm.is_new()) {
             frm.add_custom_button(__('Upload New Version'), function() {
